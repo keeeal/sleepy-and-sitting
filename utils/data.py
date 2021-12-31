@@ -1,6 +1,7 @@
-import enum
 import os, csv
+from itertools import islice
 from pathlib import Path
+from typing import Iterable
 
 import torch
 from torch import get_num_threads
@@ -40,7 +41,7 @@ class CSVFile(Dataset):
         return item, label
 
 
-def load_csv_files(
+def load(
     dirs: list[Path],
     window_size: int = 4096,
     batch_size: int = 124,
