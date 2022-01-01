@@ -1,7 +1,9 @@
 import os, csv
-from itertools import islice
+from functools import partial
+from itertools import chain
+from multiprocessing import Pool
 from pathlib import Path
-from typing import Iterable
+from typing import Sequence
 
 import torch
 from torch import get_num_threads
@@ -42,12 +44,27 @@ class CSVFile(Dataset):
 
 
 def load(
-    dirs: list[Path],
+    files: Sequence[Path] = None,
+    dirs: Sequence[Path] = None,
+    suffix: str = ".csv",
     window_size: int = 4096,
-    batch_size: int = 124,
+    batch_size: int = 128,
     shuffle: bool = False,
 ) -> DataLoader:
-    data = (Path(p) / f for d in dirs for p, _, fs in os.walk(d) for f in fs)
-    data = filter(lambda f: f.suffix == ".csv", data)
-    data = ConcatDataset(CSVFile(path, window_size) for path in data)
+    files = [] if files is None else files
+    dirs = [] if dirs is None else dirs
+
+    # get all files with the correct suffix from dirs
+    files = chain(
+        files,
+        filter(
+            lambda f: f.suffix == "." + suffix.strip("."),
+            (Path(p) / f for d in dirs for p, _, fs in os.walk(d) for f in fs),
+        ),
+    )
+
+    # load data from files
+    with Pool() as p:
+        data = ConcatDataset(p.map(partial(CSVFile, window_size=window_size), files))
+
     return DataLoader(data, batch_size, shuffle, num_workers=get_num_threads())

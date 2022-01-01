@@ -40,12 +40,12 @@ def evaluate(
     model: nn.Module,
     data: Iterable[tuple[Tensor, Tensor]],
     lossfn: _Loss,
-    device: str,
+    device: Union[torch.device, str],
     n: Optional[int] = None,
 ) -> tuple[float, ConfusionMatrix]:
     model.eval()
     losses = []
-    table = ConfusionMatrix()
+    result = ConfusionMatrix()
 
     with torch.no_grad():
         for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
@@ -56,17 +56,17 @@ def evaluate(
             for prediction, truth in zip(output, label):
                 if prediction < 0.5:
                     if truth < 0.5:
-                        table.true_negative += 1
+                        result.true_negative += 1
                     else:
-                        table.false_negative += 1
+                        result.false_negative += 1
                 else:
                     if truth < 0.5:
-                        table.false_positive += 1
+                        result.false_positive += 1
                     else:
-                        table.true_positive += 1
+                        result.true_positive += 1
 
     loss = sum(losses) / len(losses)
-    return loss, table
+    return loss, result
 
 
 def train(
@@ -75,7 +75,7 @@ def train(
     lossfn: _Loss,
     optimr: Optimizer,
     schdlr: Union[_LRScheduler, ReduceLROnPlateau],
-    device: str,
+    device: Union[torch.device, str],
     n: Optional[int] = None,
 ) -> float:
     model.train()
@@ -100,18 +100,18 @@ def train(
     return loss
 
 
-def main(learn_rate: float, batch_size: int, epochs: int, output_dir: Path):
+def main(learn_rate: float, epochs: int, output_dir: Path):
 
     # detect device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     n_devices = torch.cuda.device_count() if device == "cuda" else 1
-    print(f"Using {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
+    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
 
     # load data
     print("\nLoading data...")
     data_dirs = [Path("data") / str(n + 1) for n in range(5)]
-    train_data = load(data_dirs[:4], batch_size=batch_size, shuffle=True)
-    test_data = load(data_dirs[4:], batch_size=batch_size)
+    train_data = load(dirs=data_dirs[:4], shuffle=True)
+    test_data = load(dirs=data_dirs[4:], shuffle=True)
     print(f"Training data size: {len(train_data)}")
     print(f"Testing data size: {len(test_data)}")
 
@@ -149,8 +149,9 @@ def main(learn_rate: float, batch_size: int, epochs: int, output_dir: Path):
         lr = lr[0] if len(lr) == 1 else lr
 
         # train
-        loss = train(model, train_data, lossfn, optimr, schdlr, device, n=64)
+        loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
         print(line := f"Epoch {epoch} | LR: {lr:.4e} | Loss: {loss:.4e}")
+        
         with open(output_dir / "train.txt", "a") as f:
             f.write(line + "\n")
 
@@ -158,10 +159,16 @@ def main(learn_rate: float, batch_size: int, epochs: int, output_dir: Path):
         if epoch % 10 == 0:
             torch.save(model.state_dict(), output_dir / f"{epoch}.params")
 
-            loss, table = evaluate(model, test_data, lossfn, device, n=1024)
-            print(line := f"Loss: {loss:.4e} | Acc: {100*table.accuracy():.2f}%")
+            print()
+
+            loss, result = evaluate(model, test_data, lossfn, device, n=1000)
+            print(line := f"Loss: {loss:.4e} | Acc: {100*result.accuracy():.2f}%")
+            print(result)
+
             with open(output_dir / "eval.txt", "a") as f:
                 f.write(line + "\n")
+
+            print()
 
 
 if __name__ == "__main__":
@@ -171,7 +178,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
-    parser.add_argument("-b", "--batch-size", type=int, default=124)
     parser.add_argument("-e", "--epochs", type=int, default=2000)
     parser.add_argument("-o", "--output-dir", type=Path, default="trained")
     main(**vars(parser.parse_args()))
