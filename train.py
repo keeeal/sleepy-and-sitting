@@ -1,5 +1,4 @@
 import os
-from dataclasses import dataclass
 from datetime import datetime
 from itertools import islice
 from pathlib import Path
@@ -14,26 +13,8 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from utils.data import load
-from utils.model import DixonNet
-
-
-@dataclass
-class ConfusionMatrix:
-    true_positive: int = 0
-    false_positive: int = 0
-    true_negative: int = 0
-    false_negative: int = 0
-
-    def __len__(self) -> int:
-        return (
-            self.true_positive
-            + self.false_positive
-            + self.true_negative
-            + self.false_negative
-        )
-
-    def accuracy(self) -> float:
-        return (self.true_positive + self.true_negative) / len(self)
+from utils.resnet import resnet50
+from utils.math import ConfusionMatrix
 
 
 def evaluate(
@@ -45,28 +26,29 @@ def evaluate(
 ) -> tuple[float, ConfusionMatrix]:
     model.eval()
     losses = []
-    result = ConfusionMatrix()
+    cm = ConfusionMatrix()
 
     with torch.no_grad():
         for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
             item, label = item.to(device), label.to(device)
             output = model(item).squeeze()
             losses.append(lossfn(output, label).item())
+            output = output.sigmoid()
 
             for prediction, truth in zip(output, label):
                 if prediction < 0.5:
                     if truth < 0.5:
-                        result.true_negative += 1
+                        cm.true_negative += 1
                     else:
-                        result.false_negative += 1
+                        cm.false_negative += 1
                 else:
                     if truth < 0.5:
-                        result.false_positive += 1
+                        cm.false_positive += 1
                     else:
-                        result.true_positive += 1
+                        cm.true_positive += 1
 
     loss = sum(losses) / len(losses)
-    return loss, result
+    return loss, cm
 
 
 def train(
@@ -88,7 +70,6 @@ def train(
         losses.append(loss.item())
         loss.backward()
         optimr.step()
-        # del item, label, loss
 
     loss = sum(losses) / len(losses)
 
@@ -100,7 +81,10 @@ def train(
     return loss
 
 
-def main(learn_rate: float, epochs: int, output_dir: Path):
+def main(learn_rate: float, max_epochs: int, output_dir: Path):
+    date_and_time = str(datetime.now())
+    if output_dir is None:
+        output_dir = Path(date_and_time.replace(" ", "_"))
 
     # detect device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -109,15 +93,16 @@ def main(learn_rate: float, epochs: int, output_dir: Path):
 
     # load data
     print("\nLoading data...")
-    data_dirs = [Path("data") / str(n + 1) for n in range(5)]
-    train_data = load(dirs=data_dirs[:4], shuffle=True)
-    test_data = load(dirs=data_dirs[4:], shuffle=True)
+    data_dirs = [Path("data") / str(n) for n in range(5)]
+    train_data = load(dirs=data_dirs[1:], shuffle=True)
+    test_data = load(dirs=data_dirs[:1], shuffle=True)
     print(f"Training data size: {len(train_data)}")
     print(f"Testing data size: {len(test_data)}")
 
     # build model
     print("\nBuilding neural network...")
-    model = DixonNet().to(device)
+    # model = DixonNet().to(device)
+    model = resnet50(num_classes=1).to(device)
     if n_devices > 1:
         model = torch.nn.DataParallel(model)
 
@@ -136,24 +121,33 @@ def main(learn_rate: float, epochs: int, output_dir: Path):
 
     # save config details
     with open(output_dir / "config.txt", "w") as f:
-        f.write(f"Date: {datetime.now()}\n")
+        f.write(f"Date: {date_and_time}\n")
         f.write(f"Device: {device}\n")
         f.write(f"Model: {model}\n")
 
-    # start training loop
+    # start training
     print("\nTraining...")
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, max_epochs + 1):
 
         # get the current learning rate
-        lr = [group["lr"] for group in optimr.param_groups]
-        lr = lr[0] if len(lr) == 1 else lr
+        lrs = [group["lr"] for group in optimr.param_groups]
+        if all(lr <= 2e-8 for lr in lrs):
+            print("Training ended.")
+            return
 
         # train
         loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
-        print(line := f"Epoch {epoch} | LR: {lr:.4e} | Loss: {loss:.4e}")
-        
+        line = " | ".join(
+            (
+                f"Epoch {epoch}",
+                "LR: " + ", ".join(f"{lr:.4e}" for lr in lrs),
+                f"Loss: {loss:.4e}",
+            )
+        )
+
         with open(output_dir / "train.txt", "a") as f:
             f.write(line + "\n")
+            print(line)
 
         # save model parameters and evaluate
         if epoch % 10 == 0:
@@ -161,12 +155,22 @@ def main(learn_rate: float, epochs: int, output_dir: Path):
 
             print()
 
-            loss, result = evaluate(model, test_data, lossfn, device, n=1000)
-            print(line := f"Loss: {loss:.4e} | Acc: {100*result.accuracy():.2f}%")
-            print(result)
+            loss, cm = evaluate(model, test_data, lossfn, device, n=1000)
+            line = " | ".join(
+                (
+                    f"Loss: {loss:.4e}",
+                    f"Acc: {100 * cm.accuracy():.2f}%",
+                    f"F: {cm.f_score():.2f}",
+                    f"TP: {100 * cm.true_positive / len(cm):.2f}%",
+                    f"FP: {100 * cm.false_positive / len(cm):.2f}%",
+                    f"TN: {100 * cm.true_negative / len(cm):.2f}%",
+                    f"FN: {100 * cm.false_negative / len(cm):.2f}%",
+                )
+            )
 
             with open(output_dir / "eval.txt", "a") as f:
                 f.write(line + "\n")
+                print(line)
 
             print()
 
@@ -178,6 +182,6 @@ if __name__ == "__main__":
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
-    parser.add_argument("-e", "--epochs", type=int, default=2000)
-    parser.add_argument("-o", "--output-dir", type=Path, default="trained")
+    parser.add_argument("-e", "--max-epochs", type=int, default=1000)
+    parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))

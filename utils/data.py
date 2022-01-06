@@ -38,7 +38,7 @@ class CSVFile(Dataset):
 
     def __getitem__(self, idx: int):
         item = self.data[idx : idx + self.window_size]
-        item = torch.tensor(item, dtype=torch.float32)
+        item = torch.tensor(item, dtype=torch.float32).T
         label = torch.tensor(self.label, dtype=torch.float32)
         return item, label
 

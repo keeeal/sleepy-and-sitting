@@ -1,4 +1,7 @@
-trained/
+# Ignore all directories unless explicitly listed
+*/
+!data/
+!utils/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
