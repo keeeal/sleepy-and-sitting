@@ -351,4 +351,3 @@ def wide_resnet101_2(**kwargs: Any) -> ResNet:
     """
     kwargs["width_per_group"] = 64 * 2
     return _resnet(Bottleneck, [3, 4, 23, 3], **kwargs)
-

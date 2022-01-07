@@ -1,12 +1,11 @@
-import os, csv
+import os, csv, random
 from functools import partial
-from itertools import chain
 from multiprocessing import Pool
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Optional, Union
 
 import torch
-from torch import get_num_threads
+from torch import Tensor, get_num_threads
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 
@@ -35,35 +34,40 @@ class CSVFile(Dataset):
     def __len__(self) -> int:
         return max(len(self.data) - self.window_size + 1, 0)
 
-    def __getitem__(self, idx: int):
-        item = self.data[idx : idx + self.window_size]
-        item = torch.tensor(item, dtype=torch.float32).T
+    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
+        data = self.data[idx : idx + self.window_size]
+        item = torch.tensor(data, dtype=torch.float32).T
         label = torch.tensor(self.sleep == "L", dtype=torch.float32)
         return item, label
 
 
+def find_files(
+    dirs: Iterable[Union[Path, str]],
+    suffix: Optional[str] = None,
+    shuffle: bool = False,
+) -> list[Path]:
+    files = list(
+        filter(
+            lambda f: True if suffix is None else f.suffix == "." + suffix.strip("."),
+            (Path(p) / f for d in dirs for p, _, fs in os.walk(d) for f in fs),
+        )
+    )
+
+    if shuffle:
+        random.shuffle(files)
+
+    return files
+
+
 def load(
-    files: Sequence[Path] = None,
-    dirs: Sequence[Path] = None,
-    suffix: str = ".csv",
+    files: Iterable[Path],
     window_size: int = 4096,
     batch_size: int = 128,
     shuffle: bool = False,
 ) -> DataLoader:
-    files = [] if files is None else files
-    dirs = [] if dirs is None else dirs
-
-    # get all files with the correct suffix from dirs
-    files = chain(
-        files,
-        filter(
-            lambda f: f.suffix == "." + suffix.strip("."),
-            (Path(p) / f for d in dirs for p, _, fs in os.walk(d) for f in fs),
-        ),
-    )
-
-    # load data from files
     with Pool() as p:
-        data = ConcatDataset(p.map(partial(CSVFile, window_size=window_size), files))
+        data: Dataset = ConcatDataset(
+            p.map(partial(CSVFile, window_size=window_size), files)
+        )
 
     return DataLoader(data, batch_size, shuffle, num_workers=get_num_threads())

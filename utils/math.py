@@ -17,15 +17,28 @@ class ConfusionMatrix:
         )
 
     def accuracy(self) -> float:
-        return (self.true_positive + self.true_negative) / len(self)
+        try:
+            return (self.true_positive + self.true_negative) / len(self)
+        except ZeroDivisionError:
+            return 0
 
     def precision(self) -> float:
-        return self.true_positive / (self.true_positive + self.false_positive)
+        try:
+            return self.true_positive / (self.true_positive + self.false_positive)
+        except ZeroDivisionError:
+            return 0
 
     def recall(self) -> float:
-        return self.true_positive / (self.true_positive + self.false_negative)
+        try:
+            return self.true_positive / (self.true_positive + self.false_negative)
+        except ZeroDivisionError:
+            return 0
 
     def f_score(self, beta: float = 1) -> float:
         precision, recall = self.precision(), self.recall()
-        return (1 + beta ** 2) * precision * recall / (beta ** 2 * precision + recall)
-
+        try:
+            return (
+                (1 + beta ** 2) * precision * recall / (beta ** 2 * precision + recall)
+            )
+        except ZeroDivisionError:
+            return 0
