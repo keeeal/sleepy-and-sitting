@@ -19,18 +19,17 @@ class CSVFile(Dataset):
             for n, line in enumerate(csv.reader(f)):
                 if len(line) != 6:
                     print(f"Unexpected length {len(line)} on line {n} of {path}.")
-                if line[-1] == "DRIVING":
-                    self.data.append(list(map(float, line[2:5])))
+                self.data.append(list(map(float, line[2:5])))
 
         if len(self.data) < window_size:
             print(f"{len(self.data)} lines in {path}. Expected at least {window_size}.")
 
-        # DBL = Active9H, DBR = Active5H, DSL = Sedentary9H, DSR = Sedentary5H
-        if path.parent.name in ("DBL", "DSL"):
-            self.label = 1
-        elif path.parent.name in ("DBR", "DSR"):
-            self.label = 0
-        else:
+        parent = path.parent.name.upper()
+        self.shift = parent[0] if parent[0] in ("D", "N") else None
+        self.active = parent[1] if parent[1] in ("B", "S") else None
+        self.sleep = parent[2] if parent[2] in ("L", "R") else None
+
+        if not self.shift or not self.active or not self.sleep:
             print(f"Unexpected parent directory: {path.parent.name}")
 
     def __len__(self) -> int:
@@ -39,7 +38,7 @@ class CSVFile(Dataset):
     def __getitem__(self, idx: int):
         item = self.data[idx : idx + self.window_size]
         item = torch.tensor(item, dtype=torch.float32).T
-        label = torch.tensor(self.label, dtype=torch.float32)
+        label = torch.tensor(self.sleep == "L", dtype=torch.float32)
         return item, label
 
 

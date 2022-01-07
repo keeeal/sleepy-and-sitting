@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from utils.data import load
-from utils.resnet import resnet50
+from utils.resnet import resnet50 as resnet
 from utils.math import ConfusionMatrix
 
 
@@ -84,7 +84,7 @@ def train(
 def main(learn_rate: float, max_epochs: int, output_dir: Path):
     date_and_time = str(datetime.now())
     if output_dir is None:
-        output_dir = Path(date_and_time.replace(" ", "_"))
+        output_dir = Path(date_and_time.replace(" ", "_").replace(":", "."))
 
     # detect device
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -102,7 +102,7 @@ def main(learn_rate: float, max_epochs: int, output_dir: Path):
     # build model
     print("\nBuilding neural network...")
     # model = DixonNet().to(device)
-    model = resnet50(num_classes=1).to(device)
+    model = resnet(num_classes=1).to(device)
     if n_devices > 1:
         model = torch.nn.DataParallel(model)
 
@@ -131,7 +131,7 @@ def main(learn_rate: float, max_epochs: int, output_dir: Path):
 
         # get the current learning rate
         lrs = [group["lr"] for group in optimr.param_groups]
-        if all(lr <= 2e-8 for lr in lrs):
+        if all(lr < 1e-7 for lr in lrs):
             print("Training ended.")
             return
 
@@ -180,7 +180,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "-lr", "--learn-rate", type=float, default=1e-4
+        "-lr", "--learn-rate", type=float, default=1e-3
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)

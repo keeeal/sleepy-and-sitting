@@ -1,6 +1,7 @@
 # Ignore all directories unless explicitly listed
 */
 !data/
+!tools/
 !utils/
 
 # Byte-compiled / optimized / DLL files
