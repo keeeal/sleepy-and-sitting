@@ -268,12 +268,6 @@ class ResNet(nn.Module):
         return self._forward_impl(x)
 
 
-def _resnet(
-    block: Type[Union[BasicBlock, Bottleneck]], layers: List[int], **kwargs: Any
-) -> ResNet:
-    return ResNet(block, layers, **kwargs)
-
-
 def resnet18(**kwargs: Any) -> ResNet:
     r"""ResNet-18 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
@@ -285,28 +279,28 @@ def resnet34(**kwargs: Any) -> ResNet:
     r"""ResNet-34 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
     """
-    return _resnet(BasicBlock, [3, 4, 6, 3], **kwargs)
+    return ResNet(BasicBlock, [3, 4, 6, 3], **kwargs)
 
 
 def resnet50(**kwargs: Any) -> ResNet:
     r"""ResNet-50 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
     """
-    return _resnet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 
 def resnet101(**kwargs: Any) -> ResNet:
     r"""ResNet-101 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
     """
-    return _resnet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
 
 
 def resnet152(**kwargs: Any) -> ResNet:
     r"""ResNet-152 model from
     `"Deep Residual Learning for Image Recognition" <https://arxiv.org/pdf/1512.03385.pdf>`_.
     """
-    return _resnet(Bottleneck, [3, 8, 36, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 8, 36, 3], **kwargs)
 
 
 def resnext50_32x4d(**kwargs: Any) -> ResNet:
@@ -315,7 +309,7 @@ def resnext50_32x4d(**kwargs: Any) -> ResNet:
     """
     kwargs["groups"] = 32
     kwargs["width_per_group"] = 4
-    return _resnet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 
 def resnext101_32x8d(**kwargs: Any) -> ResNet:
@@ -324,30 +318,20 @@ def resnext101_32x8d(**kwargs: Any) -> ResNet:
     """
     kwargs["groups"] = 32
     kwargs["width_per_group"] = 8
-    return _resnet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)
 
 
 def wide_resnet50_2(**kwargs: Any) -> ResNet:
     r"""Wide ResNet-50-2 model from
     `"Wide Residual Networks" <https://arxiv.org/pdf/1605.07146.pdf>`_.
-
-    The model is the same as ResNet except for the bottleneck number of channels
-    which is twice larger in every block. The number of channels in outer 1x1
-    convolutions is the same, e.g. last block in ResNet-50 has 2048-512-2048
-    channels, and in Wide ResNet-50-2 has 2048-1024-2048.
     """
     kwargs["width_per_group"] = 64 * 2
-    return _resnet(Bottleneck, [3, 4, 6, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 6, 3], **kwargs)
 
 
 def wide_resnet101_2(**kwargs: Any) -> ResNet:
     r"""Wide ResNet-101-2 model from
-    `"Wide Residual Networks" <https://arxiv.org/pdf/1605.07146.pdf>`_.
-
-    The model is the same as ResNet except for the bottleneck number of channels
-    which is twice larger in every block. The number of channels in outer 1x1
-    convolutions is the same, e.g. last block in ResNet-50 has 2048-512-2048
-    channels, and in Wide ResNet-50-2 has 2048-1024-2048.
+    `"Wide Residual Networks" <https://arxiv.org/pdf/1605.07146.pdf>`_.t
     """
     kwargs["width_per_group"] = 64 * 2
-    return _resnet(Bottleneck, [3, 4, 23, 3], **kwargs)
+    return ResNet(Bottleneck, [3, 4, 23, 3], **kwargs)

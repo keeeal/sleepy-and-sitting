@@ -1,8 +1,10 @@
 # Ignore all directories unless explicitly listed
 */
 !data/
+!models/
 !tools/
 !utils/
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

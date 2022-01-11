@@ -16,29 +16,33 @@ class CSVFile(Dataset):
 
         with open(path, newline="") as f:
             for n, line in enumerate(csv.reader(f)):
-                if len(line) != 6:
-                    print(f"Unexpected length {len(line)} on line {n} of {path}.")
+                assert (
+                    len(line) == 6
+                ), f"Unexpected length {len(line)} on line {n} of {path}."
                 self.data.append(list(map(float, line[2:5])))
 
         if len(self.data) < window_size:
             print(f"{len(self.data)} lines in {path}. Expected at least {window_size}.")
+
+        self.data = torch.tensor(self.data, dtype=torch.float32)
 
         parent = path.parent.name.upper()
         self.shift = parent[0] if parent[0] in ("D", "N") else None
         self.active = parent[1] if parent[1] in ("B", "S") else None
         self.sleep = parent[2] if parent[2] in ("L", "R") else None
 
-        if not self.shift or not self.active or not self.sleep:
-            print(f"Unexpected parent directory: {path.parent.name}")
+        assert (
+            self.shift and self.active and self.sleep
+        ), f"Unexpected parent directory: {path.parent.name}"
 
     def __len__(self) -> int:
         return max(len(self.data) - self.window_size + 1, 0)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
-        data = self.data[idx : idx + self.window_size]
-        item = torch.tensor(data, dtype=torch.float32).T
+        item = self.data[idx : idx + self.window_size]
+        item -= item.mean(dim=0)
         label = torch.tensor(self.sleep == "L", dtype=torch.float32)
-        return item, label
+        return item.T, label
 
 
 def find_files(
@@ -62,7 +66,7 @@ def find_files(
 def load(
     files: Iterable[Path],
     window_size: int = 4096,
-    batch_size: int = 128,
+    batch_size: int = 64,
     shuffle: bool = False,
 ) -> DataLoader:
     with Pool() as p:
