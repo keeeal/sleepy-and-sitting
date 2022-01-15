@@ -255,7 +255,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("-b", "--batch-size", type=int, default=64)
     parser.add_argument(
-        "-lr", "--learn-rate", type=float, default=1e-4
+        "-lr", "--learn-rate", type=float, default=1e-5
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-k", "--k-fold", type=int, default=0)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
