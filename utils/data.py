@@ -1,8 +1,10 @@
-import os, csv, random
+import csv
+from os import walk
+from resource import getrlimit, setrlimit, RLIMIT_NOFILE
 from functools import partial
-from multiprocessing import Pool
+from multiprocessing import get_context
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable, Iterator, Optional, Union
 
 import torch
 from torch import Tensor, get_num_threads
@@ -12,19 +14,21 @@ from torch.utils.data import Dataset, ConcatDataset, DataLoader
 class CSVFile(Dataset):
     def __init__(self, path: Path, window_size: int):
         self.window_size = window_size
-        self.data = []
+        data = []
 
         with open(path, newline="") as f:
             for n, line in enumerate(csv.reader(f)):
                 assert (
                     len(line) == 6
                 ), f"Unexpected length {len(line)} on line {n} of {path}."
-                self.data.append(list(map(float, line[2:5])))
+                data.append(list(map(float, line[2:5])))
 
-        if len(self.data) < window_size:
-            print(f"{len(self.data)} lines in {path}. Expected at least {window_size}.")
+        if len(data) < window_size:
+            print(f"{len(data)} lines in {path}. Expected at least {window_size}.")
 
-        self.data = torch.tensor(self.data, dtype=torch.float32)
+        self.data = torch.tensor(data, dtype=torch.float32)
+        self.data = self.data[1:] - self.data[:-1]
+        self.data /= 4
 
         parent = path.parent.name.upper()
         self.shift = parent[0] if parent[0] in ("D", "N") else None
@@ -35,32 +39,36 @@ class CSVFile(Dataset):
             self.shift and self.active and self.sleep
         ), f"Unexpected parent directory: {path.parent.name}"
 
+        stem = path.stem.upper().split("_")
+        self.session = stem[-1] if stem[-1] in ("M", "A") else None
+        self.day = int(stem[-2][1]) if stem[-2][0] == "D" else None
+
+        assert self.session and isinstance(
+            self.day, int
+        ), f"Unexpected file name: {path.name}"
+
+        self.label = torch.tensor(self.sleep == "L", dtype=torch.float32)
+
     def __len__(self) -> int:
         return max(len(self.data) - self.window_size + 1, 0)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         item = self.data[idx : idx + self.window_size]
-        item -= item.mean(dim=0)
-        label = torch.tensor(self.sleep == "L", dtype=torch.float32)
-        return item.T, label
+        # item -= item.mean(dim=0)
+        return item.T, self.label
+
+
+def set_resource_limit(n: int):
+    setrlimit(RLIMIT_NOFILE, (n, getrlimit(RLIMIT_NOFILE)[1]))
 
 
 def find_files(
-    dirs: Iterable[Union[Path, str]],
-    suffix: Optional[str] = None,
-    shuffle: bool = False,
-) -> list[Path]:
-    files = list(
-        filter(
-            lambda f: True if suffix is None else f.suffix == "." + suffix.strip("."),
-            (Path(p) / f for d in dirs for p, _, fs in os.walk(d) for f in fs),
-        )
+    dirs: Iterable[Union[Path, str]], suffix: Optional[str] = None,
+) -> Iterator[Path]:
+    return filter(
+        lambda f: True if suffix is None else f.suffix == "." + suffix.strip("."),
+        (Path(p) / f for d in dirs for p, _, fs in walk(d) for f in fs),
     )
-
-    if shuffle:
-        random.shuffle(files)
-
-    return files
 
 
 def load(
@@ -68,10 +76,14 @@ def load(
     window_size: int = 4096,
     batch_size: int = 64,
     shuffle: bool = False,
+    resource_limit: Optional[int] = None,
 ) -> DataLoader:
-    with Pool() as p:
-        data: Dataset = ConcatDataset(
-            p.map(partial(CSVFile, window_size=window_size), files)
-        )
+    if resource_limit is not None:
+        set_resource_limit(resource_limit)
 
-    return DataLoader(data, batch_size, shuffle, num_workers=get_num_threads())
+    with get_context("spawn").Pool() as p:
+        data = p.map(partial(CSVFile, window_size=window_size), files)
+
+    return DataLoader(
+        ConcatDataset(data), batch_size, shuffle, num_workers=get_num_threads()
+    )

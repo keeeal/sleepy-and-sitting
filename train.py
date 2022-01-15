@@ -1,4 +1,4 @@
-import os
+import os, random
 from datetime import datetime
 from itertools import chain, islice
 from pathlib import Path
@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 from tqdm import tqdm
 
 from utils.data import find_files, load
-from utils.math import ConfusionMatrix
+from utils.confusion_matrix import ConfusionMatrix
 
 from models.dixonnet import DixonNet
 from models.resnet import resnet18, resnet34, resnet50, wide_resnet50_2
@@ -87,7 +87,13 @@ def train(
     return loss
 
 
-def main(window_size: int, batch_size: int, learn_rate: float, k_fold: int, max_epochs: int, output_dir: Optional[Path]):
+def main(
+    batch_size: int,
+    learn_rate: float,
+    k_fold: int,
+    max_epochs: int,
+    output_dir: Optional[Path],
+):
     date_and_time = str(datetime.now())
     if output_dir is None:
         output_dir = Path(date_and_time.replace(" ", "_").replace(":", "."))
@@ -98,14 +104,13 @@ def main(window_size: int, batch_size: int, learn_rate: float, k_fold: int, max_
     print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
 
     # find and split data
-    files = find_files(["data"], "csv", shuffle=True)
+    files = list(find_files(["data"], "csv"))
     print(f"Found {len(files)} data files.")
-
-    if max(k_fold, 2) > len(files):
-        print(f"Expected at least {max(k_fold, 2)} files.")
-        return
+    k_fold = 1 if k_fold < 2 else k_fold
+    assert max(k_fold, 2) < len(files), f"Expected at least {max(k_fold, 2)} files."
 
     if k_fold < 2:
+        random.shuffle(files)
         n_train = int(0.8 * len(files))
         splits = [(files[:n_train], files[n_train:])]
     else:
@@ -118,127 +123,136 @@ def main(window_size: int, batch_size: int, learn_rate: float, k_fold: int, max_
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
 
-    for m, Model in enumerate((resnet34,)):
-        for k, (train_files, test_files) in enumerate(splits):
-            print(f"\n#### MODEL {m} FOLD {k} OF {k_fold} ####")
+    for m, Model in (
+        ("DixonNet", DixonNet),
+        ("resnet18", resnet18),
+    ):
+        if not os.path.isdir(output_dir / m):
+            os.mkdir(output_dir / m)
 
-            # load data
-            print("\nLoading data...")
-            train_data = load(train_files, window_size, batch_size, shuffle=True)
-            test_data = load(test_files, window_size, batch_size, shuffle=True)
-            print(f"Training data size: {len(train_data.dataset)}")
-            print(f"Testing data size: {len(test_data.dataset)}")
+        for w in (512, 1024, 2048, 4096, 8192, 16384):
+            if not os.path.isdir(output_dir / m / str(w)):
+                os.mkdir(output_dir / m / str(w))
 
-            # build model
-            print("\nBuilding neural network...")
-            model = Model(num_classes=1).to(device)
-            if n_devices > 1:
-                model = torch.nn.DataParallel(model)
+            for k, (train_files, test_files) in enumerate(splits):
+                print(f"\n#### {m} - FOLD {k + 1} OF {k_fold} ####")
 
-            # loss function, optimizer, scheduler
-            lossfn = nn.BCEWithLogitsLoss()
-            optimr = Adam(model.parameters(), lr=learn_rate)
-            schdlr = ReduceLROnPlateau(optimr)
-
-            # check output directory
-            output_dir_m_k = output_dir / str(m) / str(k)
-            if not os.path.isdir(output_dir / str(m)):
-                os.mkdir(output_dir / str(m))
-            if not os.path.isdir(output_dir_m_k):
-                os.mkdir(output_dir_m_k)
-
-            # clear history files
-            open(output_dir_m_k / "train.txt", "w").close()
-            open(output_dir_m_k / "eval.txt", "w").close()
-            open(output_dir_m_k / "final.txt", "w").close()
-
-            # save config details
-            with open(output_dir_m_k / "config.txt", "w") as f:
-                f.write(f"Date: {date_and_time}\n")
-                f.write(f"Device: {device}\n")
-                f.write(f"Model: {model}\n")
-
-            # start training
-            print("\nTraining...")
-            for epoch in range(1, max_epochs + 1):
-
-                # get the current learning rate
-                lrs = [group["lr"] for group in optimr.param_groups]
-                if all(lr < 1e-7 for lr in lrs):
-                    print("Training ended.")
-                    break
-
-                # train
-                loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
-                line = " | ".join(
-                    (
-                        f"Epoch {epoch}",
-                        "LR " + ", ".join(f"{lr:.4e}" for lr in lrs),
-                        f"Loss {loss:.4e}",
-                    )
+                # load data
+                print("\nLoading data...")
+                train_data = load(
+                    train_files, w, batch_size, shuffle=True, resource_limit=4096
                 )
+                test_data = load(
+                    test_files, w, batch_size, shuffle=True, resource_limit=4096
+                )
+                print(f"Training data size: {len(train_data.dataset)}")
+                print(f"Testing data size: {len(test_data.dataset)}")
 
-                with open(output_dir_m_k / "train.txt", "a") as f:
-                    f.write(line + "\n")
-                    print(line)
+                # build model
+                print("\nBuilding neural network...")
+                model = Model(num_classes=1).to(device)
+                if n_devices > 1:
+                    model = torch.nn.DataParallel(model)
 
-                # save model parameters and evaluate
-                if epoch % 10 == 0:
-                    torch.save(
-                        model.state_dict(), output_dir_m_k / f"{epoch}.params"
-                    )
+                # loss function, optimizer, scheduler
+                lossfn = nn.BCEWithLogitsLoss()
+                optimr = Adam(model.parameters(), lr=learn_rate)
+                schdlr = ReduceLROnPlateau(optimr)
 
-                    print()
+                # check output directory
+                output_dir_mwk = output_dir / m / str(w) / str(k)
+                if not os.path.isdir(output_dir_mwk):
+                    os.mkdir(output_dir_mwk)
 
-                    loss, cm = evaluate(model, test_data, lossfn, device, n=1000)
+                # clear history files
+                open(output_dir_mwk / "train.txt", "w").close()
+                open(output_dir_mwk / "eval.txt", "w").close()
+                open(output_dir_mwk / "final.txt", "w").close()
+
+                # save config details
+                with open(output_dir_mwk / "config.txt", "w") as f:
+                    f.write(f"Date: {date_and_time}\n")
+                    f.write(f"Device: {device}\n")
+                    f.write(f"Model: {model}\n")
+
+                # start training
+                print("\nTraining...")
+                for epoch in range(1, max_epochs + 1):
+
+                    # get the current learning rate
+                    lrs = [group["lr"] for group in optimr.param_groups]
+                    if all(lr < 1e-7 for lr in lrs):
+                        print("Training ended.")
+                        break
+
+                    # train
+                    loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
                     line = " | ".join(
                         (
+                            f"Epoch {epoch}",
+                            "LR " + ", ".join(f"{lr:.4e}" for lr in lrs),
                             f"Loss {loss:.4e}",
-                            f"Acc {100 * cm.accuracy():.2f}%",
-                            f"F {cm.f_score():.2f}",
-                            f"TP {cm.true_positive}",
-                            f"FP {cm.false_positive}",
-                            f"TN {cm.true_negative}",
-                            f"FN {cm.false_negative}",
                         )
                     )
 
-                    with open(output_dir_m_k / "eval.txt", "a") as f:
+                    with open(output_dir_mwk / "train.txt", "a") as f:
                         f.write(line + "\n")
                         print(line)
 
-                    print()
+                    # save model parameters and evaluate
+                    if epoch % 10 == 0:
+                        torch.save(model.state_dict(), output_dir_mwk / f"{epoch}.params")
 
-            # # final evaluation
-            # torch.save(model.state_dict(), output_dir_m_k / f"final.params")
+                        print()
 
-            # print()
+                        loss, cm = evaluate(model, test_data, lossfn, device, n=1000)
+                        line = " | ".join(
+                            (
+                                f"Loss {loss:.4e}",
+                                f"Acc {100 * cm.accuracy():.2f}%",
+                                f"F {cm.f_score():.2f}",
+                                f"TP {cm.true_positive}",
+                                f"FP {cm.false_positive}",
+                                f"TN {cm.true_negative}",
+                                f"FN {cm.false_negative}",
+                            )
+                        )
 
-            # loss, cm = evaluate(model, test_data, lossfn, device)
-            # line = " | ".join(
-            #     (
-            #         f"Loss {loss:.4e}",
-            #         f"Acc {100 * cm.accuracy():.2f}%",
-            #         f"F {cm.f_score():.2f}",
-            #         f"TP {cm.true_positive}",
-            #         f"FP {cm.false_positive}",
-            #         f"TN {cm.true_negative}",
-            #         f"FN {cm.false_negative}",
-            #     )
-            # )
+                        with open(output_dir_mwk / "eval.txt", "a") as f:
+                            f.write(line + "\n")
+                            print(line)
 
-            # with open(output_dir_m_k / "final.txt", "a") as f:
-            #     f.write(line + "\n")
-            #     print(line)
+                        print()
 
-            # print()
+                # # final evaluation
+                # torch.save(model.state_dict(), output_dir_mwk / f"final.params")
+
+                # print()
+
+                # loss, cm = evaluate(model, test_data, lossfn, device)
+                # line = " | ".join(
+                #     (
+                #         f"Loss {loss:.4e}",
+                #         f"Acc {100 * cm.accuracy():.2f}%",
+                #         f"F {cm.f_score():.2f}",
+                #         f"TP {cm.true_positive}",
+                #         f"FP {cm.false_positive}",
+                #         f"TN {cm.true_negative}",
+                #         f"FN {cm.false_negative}",
+                #     )
+                # )
+
+                # with open(output_dir_mwk / "final.txt", "a") as f:
+                #     f.write(line + "\n")
+                #     print(line)
+
+                # print()
 
 
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-w", "--window-size", type=int, default=4096)
     parser.add_argument("-b", "--batch-size", type=int, default=64)
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
