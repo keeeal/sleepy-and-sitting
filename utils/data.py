@@ -1,10 +1,11 @@
 import csv
 from os import walk
+from itertools import chain
 from resource import getrlimit, setrlimit, RLIMIT_NOFILE
 from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Union
+from typing import Iterable, Iterator, Optional, Sequence, Union
 
 import torch
 from torch import Tensor, get_num_threads
@@ -27,8 +28,8 @@ class CSVFile(Dataset):
             print(f"{len(data)} lines in {path}. Expected at least {window_size}.")
 
         self.data = torch.tensor(data, dtype=torch.float32)
-        self.data = self.data[1:] - self.data[:-1]
-        self.data /= 4
+        # self.data = self.data[1:] - self.data[:-1]
+        self.data = (self.data - 512) / 512
 
         parent = path.parent.name.upper()
         self.shift = parent[0] if parent[0] in ("D", "N") else None
@@ -54,7 +55,6 @@ class CSVFile(Dataset):
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         item = self.data[idx : idx + self.window_size]
-        # item -= item.mean(dim=0)
         return item.T, self.label
 
 
@@ -71,10 +71,20 @@ def find_files(
     )
 
 
+def split(s: Sequence, f: float = 0.5) -> tuple[list, list]:
+    n = int(f * len(s))
+    return s[:n], s[n:]
+
+
+def k_fold_splits(s: Sequence, k: int = 5) -> list[tuple[list, list]]:
+    p = [s[n::k] for n in range(k)]
+    return [(list(chain(*p[:n], *p[n + 1 :])), p[n]) for n in range(k)]
+
+
 def load(
     files: Iterable[Path],
-    window_size: int = 4096,
-    batch_size: int = 64,
+    window_size: int,
+    batch_size: int,
     shuffle: bool = False,
     resource_limit: Optional[int] = None,
 ) -> DataLoader:

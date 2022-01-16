@@ -1,8 +1,8 @@
-import os, random
+import os, random, json
 from datetime import datetime
-from itertools import chain, islice
+from itertools import islice
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Any, Iterable, Optional, Union
 
 import torch
 from torch import nn, Tensor
@@ -12,15 +12,20 @@ from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 
 from tqdm import tqdm
 
-from utils.data import find_files, load
+from utils.data import find_files, split, k_fold_splits, load
 from utils.confusion_matrix import ConfusionMatrix
 
 from models.dixonnet import DixonNet
-from models.resnet import resnet18, resnet34, resnet50, wide_resnet50_2
-from models.efficientnet import efficientnet_b0, efficientnet_b1, efficientnet_b2
-from models.rnn import rnn, lstm, gru
-from models.transfomer import Transformer
-from models.wavenet import WaveNetModel
+from models.resnet import resnet18, resnet34, resnet50
+
+
+def print_line(**kwargs: dict[str, str]) -> None:
+    print(" | ".join(" ".join(i) for i in kwargs.items()))
+
+
+def log_ndjson(file: Path, **kwargs: dict[str, Any]) -> None:
+    with open(file, "a") as f:
+        f.write(json.dumps(kwargs) + "\n")
 
 
 def evaluate(
@@ -92,7 +97,7 @@ def main(
     learn_rate: float,
     k_fold: int,
     max_epochs: int,
-    output_dir: Optional[Path],
+    output_dir: Optional[Path] = None,
 ):
     date_and_time = str(datetime.now())
     if output_dir is None:
@@ -106,44 +111,50 @@ def main(
     # find and split data
     files = list(find_files(["data"], "csv"))
     print(f"Found {len(files)} data files.")
-    k_fold = 1 if k_fold < 2 else k_fold
+    k_fold = max(k_fold, 1)
     assert max(k_fold, 2) < len(files), f"Expected at least {max(k_fold, 2)} files."
 
-    if k_fold < 2:
+    if k_fold == 1:
         random.shuffle(files)
-        n_train = int(0.8 * len(files))
-        splits = [(files[:n_train], files[n_train:])]
+        splits = [split(files, f=0.8)]
     else:
-        parts = [files[n::k_fold] for n in range(k_fold)]
-        splits = [
-            (list(chain(*parts[:n], *parts[n + 1 :])), parts[n]) for n in range(k_fold)
-        ]
+        splits = k_fold_splits(files, k=k_fold)
 
-    # check output directory
+    # create output directory
     if not os.path.isdir(output_dir):
         os.mkdir(output_dir)
+    params_dir = output_dir / "params"
+    if not os.path.isdir(params_dir):
+        os.mkdir(params_dir)
 
-    for m, Model in (
-        ("DixonNet", DixonNet),
+    # clear log file
+    open(output_dir / "log.ndjson", "w").close()
+
+    for model_name, Model in (
+        ("dixonnet", DixonNet),
         ("resnet18", resnet18),
+        ("resnet34", resnet34),
+        ("resnet50", resnet50),
     ):
-        if not os.path.isdir(output_dir / m):
-            os.mkdir(output_dir / m)
-
-        for w in (512, 1024, 2048, 4096, 8192, 16384):
-            if not os.path.isdir(output_dir / m / str(w)):
-                os.mkdir(output_dir / m / str(w))
-
+        for window_size in [4096]:
             for k, (train_files, test_files) in enumerate(splits):
-                print(f"\n#### {m} - FOLD {k + 1} OF {k_fold} ####")
+                print(f"\n{model_name} - fold {k + 1} of {len(splits)}".upper())
 
                 # load data
                 print("\nLoading data...")
                 train_data = load(
-                    train_files, w, batch_size, shuffle=True, resource_limit=4096
+                    train_files,
+                    window_size,
+                    batch_size,
+                    shuffle=True,
+                    resource_limit=4096,
                 )
                 test_data = load(
-                    test_files, w, batch_size, shuffle=True, resource_limit=4096
+                    test_files,
+                    window_size,
+                    batch_size,
+                    shuffle=True,
+                    resource_limit=4096,
                 )
                 print(f"Training data size: {len(train_data.dataset)}")
                 print(f"Testing data size: {len(test_data.dataset)}")
@@ -151,6 +162,7 @@ def main(
                 # build model
                 print("\nBuilding neural network...")
                 model = Model(num_classes=1).to(device)
+                n_params = sum(p.numel() for p in model.parameters())
                 if n_devices > 1:
                     model = torch.nn.DataParallel(model)
 
@@ -159,94 +171,80 @@ def main(
                 optimr = Adam(model.parameters(), lr=learn_rate)
                 schdlr = ReduceLROnPlateau(optimr)
 
-                # check output directory
-                output_dir_mwk = output_dir / m / str(w) / str(k)
-                if not os.path.isdir(output_dir_mwk):
-                    os.mkdir(output_dir_mwk)
-
-                # clear history files
-                open(output_dir_mwk / "train.txt", "w").close()
-                open(output_dir_mwk / "eval.txt", "w").close()
-                open(output_dir_mwk / "final.txt", "w").close()
-
-                # save config details
-                with open(output_dir_mwk / "config.txt", "w") as f:
-                    f.write(f"Date: {date_and_time}\n")
-                    f.write(f"Device: {device}\n")
-                    f.write(f"Model: {model}\n")
+                # save model config
+                with open(output_dir / f"{model_name}.txt", "w") as f:
+                    f.write(f"{date_and_time = }\n")
+                    f.write(f"{model = }\n")
+                    f.write(f"{device = }\n")
+                    f.write(f"{n_params = }\n")
 
                 # start training
                 print("\nTraining...")
                 for epoch in range(1, max_epochs + 1):
 
-                    # get the current learning rate
+                    # check the current learning rate
                     lrs = [group["lr"] for group in optimr.param_groups]
                     if all(lr < 1e-7 for lr in lrs):
                         print("Training ended.")
                         break
 
                     # train
-                    loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
-                    line = " | ".join(
-                        (
-                            f"Epoch {epoch}",
-                            "LR " + ", ".join(f"{lr:.4e}" for lr in lrs),
-                            f"Loss {loss:.4e}",
-                        )
+                    loss = train(
+                        model, train_data, lossfn, optimr, schdlr, device, n=100
                     )
 
-                    with open(output_dir_mwk / "train.txt", "a") as f:
-                        f.write(line + "\n")
-                        print(line)
+                    print_line(
+                        epoch=str(epoch),
+                        lr=", ".join(f"{lr:.4e}" for lr in lrs),
+                        loss=f"{loss:.4e}",
+                    )
+
+                    log_ndjson(
+                        output_dir / "log.ndjson",
+                        data="training",
+                        model=model_name,
+                        window_size=window_size,
+                        batch_size=batch_size,
+                        epoch=epoch,
+                        loss=loss,
+                        learning_rate=lrs[0],
+                    )
 
                     # save model parameters and evaluate
                     if epoch % 10 == 0:
-                        torch.save(model.state_dict(), output_dir_mwk / f"{epoch}.params")
-
-                        print()
-
-                        loss, cm = evaluate(model, test_data, lossfn, device, n=1000)
-                        line = " | ".join(
-                            (
-                                f"Loss {loss:.4e}",
-                                f"Acc {100 * cm.accuracy():.2f}%",
-                                f"F {cm.f_score():.2f}",
-                                f"TP {cm.true_positive}",
-                                f"FP {cm.false_positive}",
-                                f"TN {cm.true_negative}",
-                                f"FN {cm.false_negative}",
-                            )
+                        torch.save(
+                            model.state_dict(),
+                            params_dir
+                            / f"{model_name}_{window_size=}_{k=}_{epoch}.params",
                         )
 
-                        with open(output_dir_mwk / "eval.txt", "a") as f:
-                            f.write(line + "\n")
-                            print(line)
-
                         print()
 
-                # # final evaluation
-                # torch.save(model.state_dict(), output_dir_mwk / f"final.params")
+                        loss, cm = evaluate(model, test_data, lossfn, device, n=None)
 
-                # print()
+                        print_line(
+                            loss=f"{loss:.4e}",
+                            acc=f"{100 * cm.accuracy():.2f}%",
+                            f=f"{cm.f_score():.2f}",
+                        )
 
-                # loss, cm = evaluate(model, test_data, lossfn, device)
-                # line = " | ".join(
-                #     (
-                #         f"Loss {loss:.4e}",
-                #         f"Acc {100 * cm.accuracy():.2f}%",
-                #         f"F {cm.f_score():.2f}",
-                #         f"TP {cm.true_positive}",
-                #         f"FP {cm.false_positive}",
-                #         f"TN {cm.true_negative}",
-                #         f"FN {cm.false_negative}",
-                #     )
-                # )
+                        log_ndjson(
+                            output_dir / "log.ndjson",
+                            data="evaluation",
+                            model=model_name,
+                            window_size=window_size,
+                            batch_size=batch_size,
+                            epoch=epoch,
+                            loss=loss,
+                            accuracy=100 * cm.accuracy(),
+                            f_score=cm.f_score(),
+                            true_positives=cm.true_positive,
+                            false_positives=cm.false_positive,
+                            true_negative=cm.true_negative,
+                            false_negative=cm.false_negative,
+                        )
 
-                # with open(output_dir_mwk / "final.txt", "a") as f:
-                #     f.write(line + "\n")
-                #     print(line)
-
-                # print()
+                        print()
 
 
 if __name__ == "__main__":
@@ -257,7 +255,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
-    parser.add_argument("-k", "--k-fold", type=int, default=0)
+    parser.add_argument("-k", "--k-fold", type=int, default=1)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))
