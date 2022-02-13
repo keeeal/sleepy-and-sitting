@@ -1,7 +1,8 @@
-import os, random, json
 from datetime import datetime
 from itertools import islice
+from json import dumps
 from pathlib import Path
+from random import shuffle
 from typing import Any, Iterable, Optional, Union
 
 import torch
@@ -10,22 +11,30 @@ from torch.nn.modules.loss import _Loss
 from torch.optim import Optimizer, Adam
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
 
+from sklearn.metrics import confusion_matrix, accuracy_score, f1_score
 from tqdm import tqdm
 
-from utils.data import find_files, split, k_fold_splits, load
-from utils.confusion_matrix import ConfusionMatrix
+from utils.data import (
+    batch_data,
+    find_files,
+    fraction_split,
+    load_csv_files,
+    k_fold_splits,
+)
 
 from models.dixonnet import DixonNet
 from models.resnet import resnet18, resnet34, resnet50
 
 
-def print_line(**kwargs: dict[str, str]) -> None:
+def print_as_line(**kwargs: dict[str, str]) -> None:
+    """Prints args on a single line as pipe-separated key-value pairs."""
     print(" | ".join(" ".join(i) for i in kwargs.items()))
 
 
-def log_ndjson(file: Path, **kwargs: dict[str, Any]) -> None:
-    with open(file, "a") as f:
-        f.write(json.dumps(kwargs) + "\n")
+def log_to_file(file: Path, **kwargs: dict[str, Any]) -> None:
+    """Appends args to file as a single line of JSON."""
+    with open(file, "a+") as f:
+        f.write(dumps(kwargs) + "\n")
 
 
 def evaluate(
@@ -34,32 +43,41 @@ def evaluate(
     lossfn: _Loss,
     device: Union[torch.device, str],
     n: Optional[int] = None,
-) -> tuple[float, ConfusionMatrix]:
+) -> tuple[float, list[int], list[int]]:
+    """
+    Evaluates a model.
+
+    args:
+        model: The model to evaluate.
+        data: The dataset to evaluate the model on.
+        lossfn: The function used to measure loss.
+        device: The device that the model is on.
+        n (optional): The number of batches of data to use.
+            If 'None', all data is used. Default: 'None'.
+
+    returns:
+        loss: The average loss over the dataset.
+        truth: The ground truth values expected.
+        prediction: The model's output.
+    """
     model.eval()
     losses = []
-    cm = ConfusionMatrix()
+    truth, prediction = [], []
 
     with torch.no_grad():
         for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
             item, label = item.to(device), label.to(device)
             output = model(item).squeeze()
             losses.append(lossfn(output, label).item())
-            output = output.sigmoid()
+            truth.extend(map(int, label))
 
-            for prediction, truth in zip(output, label):
-                if prediction < 0.5:
-                    if truth < 0.5:
-                        cm.true_negative += 1
-                    else:
-                        cm.false_negative += 1
-                else:
-                    if truth < 0.5:
-                        cm.false_positive += 1
-                    else:
-                        cm.true_positive += 1
+            if len(output.shape) == 1:
+                prediction.extend(map(int, output > 0))
+            else:
+                prediction.extend(map(int, output.argmax(dim=1)))
 
     loss = sum(losses) / len(losses)
-    return loss, cm
+    return loss, truth, prediction
 
 
 def train(
@@ -71,6 +89,22 @@ def train(
     device: Union[torch.device, str],
     n: Optional[int] = None,
 ) -> float:
+    """
+    Trains a model.
+
+    args:
+        model: The model to train.
+        data: The dataset to train the model on.
+        lossfn: The function used to measure loss.
+        optimr: The algorithm used to update the model parameters.
+        schdlr: The algorithm used to update the training rate.
+        device: The device that the model is on.
+        n (optional): The number of batches of data to use.
+            If 'None', all data is used. Default: 'None'.
+
+    returns:
+        loss: The average loss over the dataset.
+    """
     model.train()
     losses = []
 
@@ -93,169 +127,173 @@ def train(
 
 
 def main(
+    model_name: str,
     batch_size: int,
     learn_rate: float,
     k_fold: int,
     max_epochs: int,
+    device: Optional[str] = None,
     output_dir: Optional[Path] = None,
 ):
-    date_and_time = str(datetime.now())
-    if output_dir is None:
-        output_dir = Path(date_and_time.replace(" ", "_").replace(":", "."))
+    date_and_time = datetime.now()
 
-    # detect device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    n_devices = torch.cuda.device_count() if device == "cuda" else 1
-    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
-
-    # find and split data
-    files = list(find_files(["data"], "csv"))
+    # load data
+    print("\nLoading data...")
+    columns = 2, 3, 4
+    window_size = 4096
+    files = load_csv_files(find_files(["data"], "csv"), columns, window_size)
     print(f"Found {len(files)} data files.")
+
+    # split data
     k_fold = max(k_fold, 1)
     assert max(k_fold, 2) < len(files), f"Expected at least {max(k_fold, 2)} files."
 
     if k_fold == 1:
-        random.shuffle(files)
-        splits = [split(files, f=0.8)]
+        shuffle(files)
+        split_files = [fraction_split(files, f=0.8)]
     else:
-        splits = k_fold_splits(files, k=k_fold)
+        split_files = k_fold_splits(files, k=k_fold)
+
+    data = [
+        [batch_data(fs, batch_size, shuffle=True) for fs in split]
+        for split in split_files
+    ]
+
+    # detect devices
+    if not device:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    n_devices = torch.cuda.device_count() if device == "cuda" else 1
+    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
+
+    # build model
+    print("\nBuilding model...")
+    model = {
+        "dixonnet": DixonNet,
+        "resnet18": resnet18,
+        "resnet34": resnet34,
+        "resnet50": resnet50,
+    }[model_name](num_classes=1).to(device)
+    n_params = sum(p.numel() for p in model.parameters())
+    if n_devices > 1:
+        model = torch.nn.DataParallel(model)
+
+    # loss function, optimizer, scheduler
+    lossfn = nn.BCEWithLogitsLoss()
+    optimr = Adam(model.parameters(), lr=learn_rate)
+    schdlr = ReduceLROnPlateau(optimr)
 
     # create output directory
-    if not os.path.isdir(output_dir):
-        os.mkdir(output_dir)
+    if output_dir is None:
+        output_dir = Path("output")
+        output_dir /= str(date_and_time).replace(" ", "_").replace(":", ".")
+
     params_dir = output_dir / "params"
-    if not os.path.isdir(params_dir):
-        os.mkdir(params_dir)
+    log_file = output_dir / "log.ndjson"
+    params_dir.mkdir(parents=True, exist_ok=True)
 
-    # clear log file
-    open(output_dir / "log.ndjson", "w").close()
+    # save model config
+    with open(output_dir / f"{model_name}.txt", "w") as f:
+        f.write(f"{date_and_time = }\n")
+        f.write(f"{model_name = }\n")
+        f.write(f"{model = }\n")
+        f.write(f"{n_params = }\n")
+        f.write(f"{device = }\n")
+        f.write(f"{n_devices = }\n")
 
-    for model_name, Model in (
-        ("dixonnet", DixonNet),
-        ("resnet18", resnet18),
-        ("resnet34", resnet34),
-        ("resnet50", resnet50),
-    ):
-        for window_size in [4096]:
-            for k, (train_files, test_files) in enumerate(splits):
-                print(f"\n{model_name} - fold {k + 1} of {len(splits)}".upper())
+    for k, (train_data, test_data) in enumerate(data):
+        print(f"\nfold {k + 1} of {len(data)}".upper())
+        print(f"Training data size: {len(train_data.dataset)}")
+        print(f"Testing data size: {len(test_data.dataset)}")
 
-                # load data
-                print("\nLoading data...")
-                train_data = load(
-                    train_files,
-                    window_size,
-                    batch_size,
-                    shuffle=True,
-                    resource_limit=4096,
+        # start training
+        print("\nTraining...")
+        for epoch in range(1, max_epochs + 1):
+
+            # check the current learning rate
+            lrs = [group["lr"] for group in optimr.param_groups]
+            if all(lr < 1e-7 for lr in lrs):
+                print("Training ended.")
+                break
+
+            # train
+            loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
+
+            print_as_line(
+                epoch=str(epoch),
+                lr=", ".join(f"{lr:.4e}" for lr in lrs),
+                loss=f"{loss:.4e}",
+            )
+
+            log_to_file(
+                log_file,
+                data="training",
+                model=model_name,
+                window_size=window_size,
+                batch_size=batch_size,
+                fold=k,
+                epoch=epoch,
+                loss=loss,
+                learning_rate=lrs[0],
+            )
+
+            # save model parameters and evaluate
+            if epoch % 10 == 0:
+                torch.save(
+                    model.state_dict(), params_dir / f"{model_name}-{k}-{epoch}.params",
                 )
-                test_data = load(
-                    test_files,
-                    window_size,
-                    batch_size,
-                    shuffle=True,
-                    resource_limit=4096,
+
+                print()
+
+                loss, truth, prediction = evaluate(
+                    model, test_data, lossfn, device, n=1000
                 )
-                print(f"Training data size: {len(train_data.dataset)}")
-                print(f"Testing data size: {len(test_data.dataset)}")
+                confusion = confusion_matrix(truth, prediction)
+                tn, fp, fn, tp = map(int, confusion.ravel())
+                accuracy = accuracy_score(truth, prediction)
+                f_score = f1_score(truth, prediction)
 
-                # build model
-                print("\nBuilding neural network...")
-                model = Model(num_classes=1).to(device)
-                n_params = sum(p.numel() for p in model.parameters())
-                if n_devices > 1:
-                    model = torch.nn.DataParallel(model)
+                print_as_line(
+                    loss=f"{loss:.4e}", acc=f"{accuracy:.2%}", f=f"{f_score:.2f}",
+                )
 
-                # loss function, optimizer, scheduler
-                lossfn = nn.BCEWithLogitsLoss()
-                optimr = Adam(model.parameters(), lr=learn_rate)
-                schdlr = ReduceLROnPlateau(optimr)
+                log_to_file(
+                    log_file,
+                    data="evaluation",
+                    model=model_name,
+                    window_size=window_size,
+                    batch_size=batch_size,
+                    fold=k,
+                    epoch=epoch,
+                    loss=loss,
+                    accuracy=100 * accuracy,
+                    f_score=f_score,
+                    true_positives=tp,
+                    false_positives=fp,
+                    true_negative=tn,
+                    false_negative=fn,
+                )
 
-                # save model config
-                with open(output_dir / f"{model_name}.txt", "w") as f:
-                    f.write(f"{date_and_time = }\n")
-                    f.write(f"{model = }\n")
-                    f.write(f"{device = }\n")
-                    f.write(f"{n_params = }\n")
-
-                # start training
-                print("\nTraining...")
-                for epoch in range(1, max_epochs + 1):
-
-                    # check the current learning rate
-                    lrs = [group["lr"] for group in optimr.param_groups]
-                    if all(lr < 1e-7 for lr in lrs):
-                        print("Training ended.")
-                        break
-
-                    # train
-                    loss = train(
-                        model, train_data, lossfn, optimr, schdlr, device, n=100
-                    )
-
-                    print_line(
-                        epoch=str(epoch),
-                        lr=", ".join(f"{lr:.4e}" for lr in lrs),
-                        loss=f"{loss:.4e}",
-                    )
-
-                    log_ndjson(
-                        output_dir / "log.ndjson",
-                        data="training",
-                        model=model_name,
-                        window_size=window_size,
-                        batch_size=batch_size,
-                        epoch=epoch,
-                        loss=loss,
-                        learning_rate=lrs[0],
-                    )
-
-                    # save model parameters and evaluate
-                    if epoch % 10 == 0:
-                        torch.save(
-                            model.state_dict(),
-                            params_dir
-                            / f"{model_name}_{window_size=}_{k=}_{epoch}.params",
-                        )
-
-                        print()
-
-                        loss, cm = evaluate(model, test_data, lossfn, device, n=None)
-
-                        print_line(
-                            loss=f"{loss:.4e}",
-                            acc=f"{100 * cm.accuracy():.2f}%",
-                            f=f"{cm.f_score():.2f}",
-                        )
-
-                        log_ndjson(
-                            output_dir / "log.ndjson",
-                            data="evaluation",
-                            model=model_name,
-                            window_size=window_size,
-                            batch_size=batch_size,
-                            epoch=epoch,
-                            loss=loss,
-                            accuracy=100 * cm.accuracy(),
-                            f_score=cm.f_score(),
-                            true_positives=cm.true_positive,
-                            false_positives=cm.false_positive,
-                            true_negative=cm.true_negative,
-                            false_negative=cm.false_negative,
-                        )
-
-                        print()
+                print()
 
 
 if __name__ == "__main__":
     import argparse
 
+    models = [
+        "dixonnet",
+        "resnet18",
+        "resnet34",
+        "resnet50",
+    ]
+
     parser = argparse.ArgumentParser()
+    parser.add_argument("-m", "--model-name", choices=models, default="resnet18")
     parser.add_argument("-b", "--batch-size", type=int, default=64)
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-k", "--k-fold", type=int, default=1)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
+    parser.add_argument("-d", "--device", default=None)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))
