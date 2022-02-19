@@ -15,11 +15,13 @@ from sklearn.metrics import confusion_matrix, accuracy_score, f1_score
 from tqdm import tqdm
 
 from utils.data import (
+    CSVFile,
     batch_data,
     find_files,
     fraction_split,
     load_csv_files,
     k_fold_splits,
+    set_resource_limit,
 )
 
 from models.dixonnet import DixonNet
@@ -125,6 +127,11 @@ def train(
 
     return loss
 
+def sleep_long(csv_file: CSVFile) -> bool:
+    return csv_file.sleep == "L"
+
+def activity_breaking(csv_file: CSVFile) -> bool:
+    return csv_file.sleep == "B"
 
 def main(
     model_name: str,
@@ -132,16 +139,30 @@ def main(
     learn_rate: float,
     k_fold: int,
     max_epochs: int,
+    label_type: str,
     device: Optional[str] = None,
     output_dir: Optional[Path] = None,
 ):
     date_and_time = datetime.now()
+    set_resource_limit(4096)
 
     # load data
     print("\nLoading data...")
     columns = 2, 3, 4
     window_size = 4096
-    files = load_csv_files(find_files(["data"], "csv"), columns, window_size)
+
+    label_function = {
+        "sleep": sleep_long,
+        "activity": activity_breaking,
+    }[label_type]
+
+    files = load_csv_files(
+        find_files(["data"], "csv"),
+        columns,
+        window_size,
+        label_fn=label_function,
+    )
+
     print(f"Found {len(files)} data files.")
 
     # split data
@@ -165,22 +186,13 @@ def main(
     n_devices = torch.cuda.device_count() if device == "cuda" else 1
     print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
 
-    # build model
-    print("\nBuilding model...")
-    model = {
+    # get model class
+    model_class = {
         "dixonnet": DixonNet,
         "resnet18": resnet18,
         "resnet34": resnet34,
         "resnet50": resnet50,
-    }[model_name](num_classes=1).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    if n_devices > 1:
-        model = torch.nn.DataParallel(model)
-
-    # loss function, optimizer, scheduler
-    lossfn = nn.BCEWithLogitsLoss()
-    optimr = Adam(model.parameters(), lr=learn_rate)
-    schdlr = ReduceLROnPlateau(optimr)
+    }[model_name]
 
     # create output directory
     if output_dir is None:
@@ -191,19 +203,32 @@ def main(
     log_file = output_dir / "log.ndjson"
     params_dir.mkdir(parents=True, exist_ok=True)
 
-    # save model config
-    with open(output_dir / f"{model_name}.txt", "w") as f:
-        f.write(f"{date_and_time = }\n")
-        f.write(f"{model_name = }\n")
-        f.write(f"{model = }\n")
-        f.write(f"{n_params = }\n")
-        f.write(f"{device = }\n")
-        f.write(f"{n_devices = }\n")
-
     for k, (train_data, test_data) in enumerate(data):
         print(f"\nfold {k + 1} of {len(data)}".upper())
         print(f"Training data size: {len(train_data.dataset)}")
         print(f"Testing data size: {len(test_data.dataset)}")
+
+        # build model
+        print("\nBuilding model...")
+        model = model_class(num_classes=1).to(device)
+        n_params = sum(p.numel() for p in model.parameters())
+        if n_devices > 1:
+            model = torch.nn.DataParallel(model)
+        print(f"{model_name} parameters: {n_params}")
+
+        # loss function, optimizer, scheduler
+        lossfn = nn.BCEWithLogitsLoss()
+        optimr = Adam(model.parameters(), lr=learn_rate)
+        schdlr = ReduceLROnPlateau(optimr)
+
+        # save model config
+        with open(output_dir / f"{model_name}.txt", "w") as f:
+            f.write(f"{date_and_time = }\n")
+            f.write(f"{model_name = }\n")
+            f.write(f"{model = }\n")
+            f.write(f"{n_params = }\n")
+            f.write(f"{device = }\n")
+            f.write(f"{n_devices = }\n")
 
         # start training
         print("\nTraining...")
@@ -286,6 +311,11 @@ if __name__ == "__main__":
         "resnet50",
     ]
 
+    labels = [
+        "sleep",
+        "activity",
+    ]
+
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model-name", choices=models, default="resnet18")
     parser.add_argument("-b", "--batch-size", type=int, default=64)
@@ -294,6 +324,7 @@ if __name__ == "__main__":
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-k", "--k-fold", type=int, default=1)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
+    parser.add_argument("-l", "--label-type", choices=labels, default="sleep")
     parser.add_argument("-d", "--device", default=None)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))

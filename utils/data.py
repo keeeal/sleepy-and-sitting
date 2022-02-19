@@ -1,10 +1,12 @@
+from ast import Call
 from csv import reader
 from functools import partial
 from itertools import chain
 from multiprocessing import get_context
 from os import walk
 from pathlib import Path
-from typing import Iterable, Iterator, Optional, Sequence, TypeVar, Union
+from resource import RLIMIT_NOFILE, getrlimit, setrlimit
+from typing import Any, Callable, Iterable, Iterator, Optional, Sequence, TypeVar, Union
 
 import torch
 from torch import Tensor, get_num_threads
@@ -26,7 +28,11 @@ class CSVFile(Dataset):
     """
 
     def __init__(
-        self, path: Path, columns: Optional[Iterable[int]] = None, window_size: int = 1
+        self,
+        path: Path,
+        label_fn: Callable[[Any], bool],
+        columns: Optional[Iterable[int]] = None,
+        window_size: int = 1,
     ):
         self.window_size = window_size
 
@@ -60,7 +66,7 @@ class CSVFile(Dataset):
             self.day, int
         ), f"Unexpected file name: {path.name}"
 
-        self.label = torch.tensor(self.sleep == "L", dtype=torch.float32)
+        self.label = torch.tensor(label_fn(self), dtype=torch.float32)
 
     def __len__(self) -> int:
         return max(len(self.data) - self.window_size + 1, 0)
@@ -68,6 +74,11 @@ class CSVFile(Dataset):
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
         item = self.data[idx : idx + self.window_size]
         return item.T, self.label
+
+
+def set_resource_limit(n: int):
+    """Sets a new soft resource limits for the current process."""
+    setrlimit(RLIMIT_NOFILE, (n, getrlimit(RLIMIT_NOFILE)[1]))
 
 
 def find_files(
@@ -114,7 +125,10 @@ def k_fold_splits(s: Sequence[T], k: int = 5) -> list[tuple[list[T], list[T]]]:
 
 
 def load_csv_files(
-    files: Iterable[Path], columns: Iterable[int], window_size: int,
+    files: Iterable[Path],
+    columns: Iterable[int],
+    window_size: int,
+    label_fn: Callable[[CSVFile], bool],
 ) -> list[CSVFile]:
     """
     Creates CSVFile datasets by processing CSV files in parallel.
@@ -125,7 +139,12 @@ def load_csv_files(
         window_size: The number of lines per sample.
     """
     with get_context("spawn").Pool() as p:
-        return p.map(partial(CSVFile, columns=columns, window_size=window_size), files)
+        return p.map(
+            partial(
+                CSVFile, columns=columns, window_size=window_size, label_fn=label_fn
+            ),
+            files,
+        )
 
 
 def batch_data(
