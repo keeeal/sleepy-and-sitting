@@ -1,15 +1,14 @@
-from ast import Call
 from csv import reader
 from functools import partial
 from itertools import chain
-from multiprocessing import get_context
 from os import walk
 from pathlib import Path
-from resource import RLIMIT_NOFILE, getrlimit, setrlimit
+
 from typing import Any, Callable, Iterable, Iterator, Optional, Sequence, TypeVar, Union
 
 import torch
 from torch import Tensor, get_num_threads
+from torch.multiprocessing import Pool
 from torch.utils.data import Dataset, ConcatDataset, DataLoader
 
 T = TypeVar("T")
@@ -51,11 +50,11 @@ class CSVFile(Dataset):
 
         parent = path.parent.name.upper()
         self.shift = parent[0] if parent[0] in ("D", "N") else None
-        self.active = parent[1] if parent[1] in ("B", "S") else None
+        self.activity = parent[1] if parent[1] in ("B", "S") else None
         self.sleep = parent[2] if parent[2] in ("L", "R") else None
 
         assert (
-            self.shift and self.active and self.sleep
+            self.shift and self.activity and self.sleep
         ), f"Unexpected parent directory: {path.parent.name}"
 
         stem = path.stem.upper().split("_")
@@ -68,6 +67,18 @@ class CSVFile(Dataset):
 
         self.label = torch.tensor(label_fn(self), dtype=torch.float32)
 
+    def is_shift_day(self) -> bool:
+        return self.shift == "D"
+
+    def is_sleep_long(self) -> bool:
+        return self.sleep == "L"
+
+    def is_activity_broken(self) -> bool:
+        return self.activity == "B"
+
+    def is_session_morning(self) -> bool:
+        return self.session == "M"
+
     def __len__(self) -> int:
         return max(len(self.data) - self.window_size + 1, 0)
 
@@ -76,16 +87,11 @@ class CSVFile(Dataset):
         return item.T, self.label
 
 
-def set_resource_limit(n: int):
-    """Sets a new soft resource limits for the current process."""
-    setrlimit(RLIMIT_NOFILE, (n, getrlimit(RLIMIT_NOFILE)[1]))
-
-
 def find_files(
     dirs: Iterable[Union[Path, str]], suffix: Optional[str] = None,
 ) -> Iterator[Path]:
     """
-    Gets the paths of all files found in multiple directories.
+    Gets the paths of files from multiple directories.
 
     args:
         dirs: The directories to search for files.
@@ -114,14 +120,14 @@ def fraction_split(s: Sequence[T], f: float = 0.5) -> tuple[list[T], list[T]]:
 def k_fold_splits(s: Sequence[T], k: int = 5) -> list[tuple[list[T], list[T]]]:
     """
     Splits a sequence into 'k' parts, then returns each one paired with the
-    remaining data.
+    remaining data. Used for k-fold cross-validation.
 
     args:
         s: The sequence to be split.
         k: The number of parts to split the data into.
     """
     p = [s[n::k] for n in range(k)]
-    return [(list(chain(*p[:n], *p[n + 1 :])), p[n]) for n in range(k)]
+    return [(list(chain(*p[:n], *p[n + 1 :])), list(p[n])) for n in range(k)]
 
 
 def load_csv_files(
@@ -138,7 +144,7 @@ def load_csv_files(
         columns: The indices of the columns to read.
         window_size: The number of lines per sample.
     """
-    with get_context("spawn").Pool() as p:
+    with Pool() as p:
         return p.map(
             partial(
                 CSVFile, columns=columns, window_size=window_size, label_fn=label_fn

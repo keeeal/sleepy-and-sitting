@@ -3,7 +3,7 @@ from itertools import islice
 from json import dumps
 from pathlib import Path
 from random import shuffle
-from typing import Any, Iterable, Optional, Union
+from typing import Iterable, Optional, Union
 
 import torch
 from torch import nn, Tensor
@@ -21,19 +21,19 @@ from utils.data import (
     fraction_split,
     load_csv_files,
     k_fold_splits,
-    set_resource_limit,
 )
+from utils.misc import set_resource_limit
 
 from models.dixonnet import DixonNet
 from models.resnet import resnet18, resnet34, resnet50
 
 
-def print_as_line(**kwargs: dict[str, str]) -> None:
+def print_as_line(**kwargs: str) -> None:
     """Prints args on a single line as pipe-separated key-value pairs."""
-    print(" | ".join(" ".join(i) for i in kwargs.items()))
+    print(" | ".join(" ".join(item) for item in kwargs.items()))
 
 
-def log_to_file(file: Path, **kwargs: dict[str, Any]) -> None:
+def log_to_file(file: Path, **kwargs) -> None:
     """Appends args to file as a single line of JSON."""
     with open(file, "a+") as f:
         f.write(dumps(kwargs) + "\n")
@@ -63,8 +63,9 @@ def evaluate(
         prediction: The model's output.
     """
     model.eval()
-    losses = []
-    truth, prediction = [], []
+    losses: list[float] = []
+    truth: list[int] = []
+    prediction: list[int] = []
 
     with torch.no_grad():
         for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
@@ -127,42 +128,49 @@ def train(
 
     return loss
 
-def sleep_long(csv_file: CSVFile) -> bool:
-    return csv_file.sleep == "L"
-
-def activity_breaking(csv_file: CSVFile) -> bool:
-    return csv_file.sleep == "B"
 
 def main(
     model_name: str,
+    label_name: str,
     batch_size: int,
     learn_rate: float,
     k_fold: int,
     max_epochs: int,
-    label_type: str,
     device: Optional[str] = None,
     output_dir: Optional[Path] = None,
 ):
     date_and_time = datetime.now()
     set_resource_limit(4096)
 
+    # get model class
+    model_class = {
+        "dixonnet": DixonNet,
+        "resnet18": resnet18,
+        "resnet34": resnet34,
+        "resnet50": resnet50,
+    }[model_name]
+
+    # get label function
+    label_function = {
+        "shift": CSVFile.is_shift_day,
+        "sleep": CSVFile.is_sleep_long,
+        "activity": CSVFile.is_activity_broken,
+        "session": CSVFile.is_session_morning,
+    }[label_name]
+
+    # detect devices
+    if not device:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    n_devices = torch.cuda.device_count() if device == "cuda" else 1
+    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
+
     # load data
     print("\nLoading data...")
     columns = 2, 3, 4
     window_size = 4096
-
-    label_function = {
-        "sleep": sleep_long,
-        "activity": activity_breaking,
-    }[label_type]
-
     files = load_csv_files(
-        find_files(["data"], "csv"),
-        columns,
-        window_size,
-        label_fn=label_function,
+        find_files(["data"], "csv"), columns, window_size, label_fn=label_function,
     )
-
     print(f"Found {len(files)} data files.")
 
     # split data
@@ -175,24 +183,11 @@ def main(
     else:
         split_files = k_fold_splits(files, k=k_fold)
 
+    # batch data
     data = [
         [batch_data(fs, batch_size, shuffle=True) for fs in split]
         for split in split_files
     ]
-
-    # detect devices
-    if not device:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    n_devices = torch.cuda.device_count() if device == "cuda" else 1
-    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
-
-    # get model class
-    model_class = {
-        "dixonnet": DixonNet,
-        "resnet18": resnet18,
-        "resnet34": resnet34,
-        "resnet50": resnet50,
-    }[model_name]
 
     # create output directory
     if output_dir is None:
@@ -214,7 +209,8 @@ def main(
         n_params = sum(p.numel() for p in model.parameters())
         if n_devices > 1:
             model = torch.nn.DataParallel(model)
-        print(f"{model_name} parameters: {n_params}")
+        print(model_name.upper())
+        print(f"Parameters: {n_params}")
 
         # loss function, optimizer, scheduler
         lossfn = nn.BCEWithLogitsLoss()
@@ -252,6 +248,7 @@ def main(
             log_to_file(
                 log_file,
                 data="training",
+                label=label_name,
                 model=model_name,
                 window_size=window_size,
                 batch_size=batch_size,
@@ -284,6 +281,7 @@ def main(
                 log_to_file(
                     log_file,
                     data="evaluation",
+                    label=label_name,
                     model=model_name,
                     window_size=window_size,
                     batch_size=batch_size,
@@ -294,8 +292,8 @@ def main(
                     f_score=f_score,
                     true_positives=tp,
                     false_positives=fp,
-                    true_negative=tn,
-                    false_negative=fn,
+                    true_negatives=tn,
+                    false_negatives=fn,
                 )
 
                 print()
@@ -312,19 +310,21 @@ if __name__ == "__main__":
     ]
 
     labels = [
+        "shift",
         "sleep",
         "activity",
+        "session",
     ]
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-m", "--model-name", choices=models, default="resnet18")
+    parser.add_argument("-l", "--label-name", choices=labels, default="sleep")
     parser.add_argument("-b", "--batch-size", type=int, default=64)
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-k", "--k-fold", type=int, default=1)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
-    parser.add_argument("-l", "--label-type", choices=labels, default="sleep")
     parser.add_argument("-d", "--device", default=None)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))

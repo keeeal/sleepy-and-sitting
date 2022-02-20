@@ -1,5 +1,4 @@
 from torch import nn, Tensor
-from torch.nn.functional import avg_pool1d
 
 
 class DixonNet(nn.Module):
@@ -24,13 +23,20 @@ class DixonNet(nn.Module):
             nn.Conv1d(width, width, kernel_size),
             nn.ReLU(),
         )
-        self.classifier = nn.Sequential(
-            nn.Dropout(dropout), nn.Linear(width, num_classes)
-        )
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        self.drop = nn.Dropout(dropout)
+        self.fc = nn.Linear(width, num_classes)
+
+    def get_final_weights(self) -> Tensor:
+        return self.fc.weight
+
+    def get_features(self, x: Tensor) -> Tensor:
+        return self.features(x)
 
     def forward(self, x: Tensor) -> Tensor:
-        x = self.features(x)
-        x = avg_pool1d(x, kernel_size=x.shape[2])  # global avg pool
+        x = self.get_features(x)
+        x = self.avgpool(x)
         x = x.squeeze(2)
-        x = self.classifier(x)
+        x = self.drop(x)
+        x = self.fc(x)
         return x
