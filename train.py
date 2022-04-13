@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 from datetime import datetime
 from itertools import islice
 from json import dumps
@@ -29,12 +30,12 @@ from models.resnet import resnet18, resnet34, resnet50
 
 
 def print_as_line(**kwargs: str) -> None:
-    """Prints args on a single line as pipe-separated key-value pairs."""
+    """Print args on a single line as pipe-separated key-value pairs."""
     print(" | ".join(" ".join(item) for item in kwargs.items()))
 
 
 def log_to_file(file: Path, **kwargs) -> None:
-    """Appends args to file as a single line of JSON."""
+    """Append args to a file as a single line of JSON."""
     with open(file, "a+") as f:
         f.write(dumps(kwargs) + "\n")
 
@@ -42,36 +43,36 @@ def log_to_file(file: Path, **kwargs) -> None:
 def evaluate(
     model: nn.Module,
     data: Iterable[tuple[Tensor, Tensor]],
-    lossfn: _Loss,
+    loss_fn: _Loss,
     device: Union[torch.device, str],
-    n: Optional[int] = None,
 ) -> tuple[float, list[int], list[int]]:
     """
     Evaluates a model.
 
-    args:
-        model: The model to evaluate.
-        data: The dataset to evaluate the model on.
-        lossfn: The function used to measure loss.
-        device: The device that the model is on.
-        n (optional): The number of batches of data to use.
-            If 'None', all data is used. Default: 'None'.
+    Parameters
+    ==========
+    model: The model to evaluate.
+    data: The dataset to evaluate the model on.
+    loss_fn: The function used to measure loss.
+    device: The device that the model is on.
 
-    returns:
-        loss: The average loss over the dataset.
-        truth: The ground truth values expected.
-        prediction: The model's output.
+    Returns
+    =======
+    loss: The average loss over the dataset.
+    truth: The ground truth values expected.
+    prediction: The model's output.
     """
+
     model.eval()
     losses: list[float] = []
     truth: list[int] = []
     prediction: list[int] = []
 
     with torch.no_grad():
-        for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
+        for item, label in tqdm(data):
             item, label = item.to(device), label.to(device)
             output = model(item).squeeze()
-            losses.append(lossfn(output, label).item())
+            losses.append(loss_fn(output, label).item())
             truth.extend(map(int, label))
 
             if len(output.shape) == 1:
@@ -86,45 +87,47 @@ def evaluate(
 def train(
     model: nn.Module,
     data: Iterable[tuple[Tensor, Tensor]],
-    lossfn: _Loss,
-    optimr: Optimizer,
-    schdlr: Union[_LRScheduler, ReduceLROnPlateau],
+    loss_fn: _Loss,
+    optimizer: Optimizer,
+    scheduler: Union[_LRScheduler, ReduceLROnPlateau],
     device: Union[torch.device, str],
-    n: Optional[int] = None,
 ) -> float:
     """
-    Trains a model.
+    Performs one epoch of training by passing once through the data provided,
+    updating the parameters of the model in a direction that minimises loss
+    and in accordance with the optimiser and learning rate scheduler.
 
-    args:
-        model: The model to train.
-        data: The dataset to train the model on.
-        lossfn: The function used to measure loss.
-        optimr: The algorithm used to update the model parameters.
-        schdlr: The algorithm used to update the training rate.
-        device: The device that the model is on.
-        n (optional): The number of batches of data to use.
-            If 'None', all data is used. Default: 'None'.
+    Parameters
+    ==========
+    model: The model to train.
+    data: The dataset to train the model on.
+    loss_fn: The function used to measure loss.
+    optimizer: The algorithm used to update the model parameters.
+    scheduler: The algorithm used to update the training rate.
+    device: The device that the model is on.
 
-    returns:
-        loss: The average loss over the dataset.
+    Returns
+    =======
+    loss: The average loss over the dataset.
     """
+
     model.train()
     losses = []
 
-    for item, label in tqdm(islice(data, n) if n is not None else data, total=n):
-        optimr.zero_grad()
+    for item, label in tqdm(data):
+        optimizer.zero_grad()
         item, label = item.to(device), label.to(device)
-        loss = lossfn(model(item).squeeze(), label)
+        loss = loss_fn(model(item).squeeze(), label)
         losses.append(loss.item())
         loss.backward()
-        optimr.step()
+        optimizer.step()
 
     loss = sum(losses) / len(losses)
 
-    if isinstance(schdlr, ReduceLROnPlateau):
-        schdlr.step(loss)
+    if isinstance(scheduler, ReduceLROnPlateau):
+        scheduler.step(loss)
     else:
-        schdlr.step()
+        scheduler.step()
 
     return loss
 
@@ -133,12 +136,15 @@ def main(
     model_name: str,
     label_name: str,
     batch_size: int,
+    window_size: int,
     learn_rate: float,
     k_fold: int,
     max_epochs: int,
+    med_filt_size: int,
+    low_pass_freq: float,
     device: Optional[str] = None,
     output_dir: Optional[Path] = None,
-):
+) -> None:
     date_and_time = datetime.now()
     set_resource_limit(4096)
 
@@ -161,15 +167,19 @@ def main(
     # detect devices
     if not device:
         device = "cuda" if torch.cuda.is_available() else "cpu"
+
     n_devices = torch.cuda.device_count() if device == "cuda" else 1
-    print(f"Found {n_devices} {device} device{'s' if n_devices > 1 else ''}.")
+    print(f"Found {n_devices} {device} devices.")
 
     # load data
     print("\nLoading data...")
-    columns = 2, 3, 4
-    window_size = 4096
     files = load_csv_files(
-        find_files(["data"], "csv"), columns, window_size, label_fn=label_function,
+        sorted(find_files(["data"], "csv")),
+        label_fn=label_function,
+        columns=(2, 3, 4),
+        window_size=window_size,
+        median_filter_size=med_filt_size,
+        low_pass_frequency=low_pass_freq,
     )
     print(f"Found {len(files)} data files.")
 
@@ -185,7 +195,7 @@ def main(
 
     # batch data
     data = [
-        [batch_data(fs, batch_size, shuffle=True) for fs in split]
+        [batch_data(ds, batch_size, shuffle=True) for ds in split]
         for split in split_files
     ]
 
@@ -207,15 +217,17 @@ def main(
         print("\nBuilding model...")
         model = model_class(num_classes=1).to(device)
         n_params = sum(p.numel() for p in model.parameters())
+
         if n_devices > 1:
             model = torch.nn.DataParallel(model)
+
         print(model_name.upper())
         print(f"Parameters: {n_params}")
 
         # loss function, optimizer, scheduler
-        lossfn = nn.BCEWithLogitsLoss()
-        optimr = Adam(model.parameters(), lr=learn_rate)
-        schdlr = ReduceLROnPlateau(optimr)
+        loss_fn = nn.BCEWithLogitsLoss()
+        optimizer = Adam(model.parameters(), lr=learn_rate)
+        scheduler = ReduceLROnPlateau(optimizer)
 
         # save model config
         with open(output_dir / f"{model_name}.txt", "w") as f:
@@ -228,16 +240,19 @@ def main(
 
         # start training
         print("\nTraining...")
+        min_lr = 1e-7
+
         for epoch in range(1, max_epochs + 1):
 
-            # check the current learning rate
-            lrs = [group["lr"] for group in optimr.param_groups]
-            if all(lr < 1e-7 for lr in lrs):
+            # check the learning rate and terminate if less than min_lr
+            lrs = [group["lr"] for group in optimizer.param_groups]
+            if all(lr < min_lr for lr in lrs):
                 print("Training ended.")
                 break
 
             # train
-            loss = train(model, train_data, lossfn, optimr, schdlr, device, n=100)
+            some_train_data = list(islice(train_data, 100))
+            loss = train(model, some_train_data, loss_fn, optimizer, scheduler, device)
 
             print_as_line(
                 epoch=str(epoch),
@@ -266,9 +281,11 @@ def main(
 
                 print()
 
+                some_test_data = list(islice(train_data, 1000))
                 loss, truth, prediction = evaluate(
-                    model, test_data, lossfn, device, n=1000
+                    model, some_test_data, loss_fn, device
                 )
+
                 confusion = confusion_matrix(truth, prediction)
                 tn, fp, fn, tp = map(int, confusion.ravel())
                 accuracy = accuracy_score(truth, prediction)
@@ -285,6 +302,8 @@ def main(
                     model=model_name,
                     window_size=window_size,
                     batch_size=batch_size,
+                    median_filter_size=med_filt_size,
+                    low_pass_frequency=low_pass_freq,
                     fold=k,
                     epoch=epoch,
                     loss=loss,
@@ -300,8 +319,6 @@ def main(
 
 
 if __name__ == "__main__":
-    import argparse
-
     models = [
         "dixonnet",
         "resnet18",
@@ -316,15 +333,18 @@ if __name__ == "__main__":
         "session",
     ]
 
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
     parser.add_argument("-m", "--model-name", choices=models, default="resnet18")
     parser.add_argument("-l", "--label-name", choices=labels, default="sleep")
     parser.add_argument("-b", "--batch-size", type=int, default=64)
+    parser.add_argument("-w", "--window-size", type=int, default=4096)
     parser.add_argument(
         "-lr", "--learn-rate", type=float, default=1e-4
     )  # I CHANGED LORD KREELS DEFAULT FROM 1e-3
     parser.add_argument("-k", "--k-fold", type=int, default=1)
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
+    parser.add_argument("-mf", "--med-filt-size", type=int, default=0)
+    parser.add_argument("-lp", "--low-pass-freq", type=float, default=0)
     parser.add_argument("-d", "--device", default=None)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))

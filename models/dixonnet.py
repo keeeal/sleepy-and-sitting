@@ -27,7 +27,7 @@ class DixonNet(nn.Module):
         self.drop = nn.Dropout(dropout)
         self.fc = nn.Linear(width, num_classes)
 
-    def get_final_weights(self) -> Tensor:
+    def get_final_layer_weights(self) -> Tensor:
         return self.fc.weight
 
     def get_features(self, x: Tensor) -> Tensor:

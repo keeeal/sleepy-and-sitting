@@ -248,7 +248,7 @@ class ResNet(nn.Module):
 
         return nn.Sequential(*layers)
 
-    def get_final_weights(self) -> Tensor:
+    def get_final_layer_weights(self) -> Tensor:
         return self.fc.weight
 
     def get_features(self, x: Tensor) -> Tensor:
