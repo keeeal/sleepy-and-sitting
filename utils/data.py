@@ -50,19 +50,25 @@ class CSVFile(Dataset):
     ):
         self.window_size = window_size
 
+        # If no columns specified, determine how many are in the file by
+        # reading the first line.
         if columns is None:
             with open(file) as f:
                 columns = range(len(f.readline()))
 
+        # Load the columns and convert each item to a float.
         with open(file, newline="") as f:
             data = [[float(line[i]) for i in columns] for line in reader(f)]
 
+        # We need at least one window size of data from the file.
         if len(data) < window_size:
             print(f"{len(data)} lines in {file}. Expected at least {window_size}.")
 
+        # Median filter the data if specified.
         if median_filter_size > 0:
             data = medfilt(data, (median_filter_size, 1))
 
+        # Butterworth (low pass) filter the data if specified.
         if low_pass_frequency > 0:
             butter_order = 10
             data = sosfilt(
@@ -77,9 +83,12 @@ class CSVFile(Dataset):
                 axis=0,
             )
 
+        # Convert the data from arbitrary units to g (i.e. gravity).
         self.data = torch.tensor(data, dtype=torch.float32)
         self.data = (self.data - 512) / 128  # convert to g
 
+        # Some properties of the data are determined from the name
+        # of the parent directory.
         parent = file.parent.name.upper()
         self.shift = parent[0] if parent[0] in ("D", "N") else None
         self.activity = parent[1] if parent[1] in ("B", "S") else None
@@ -89,6 +98,7 @@ class CSVFile(Dataset):
             self.shift and self.activity and self.sleep
         ), f"Unexpected parent directory: {file.parent.name}"
 
+        # Some properties of the data are determined from the file name.
         stem = file.stem.upper().split("_")
         self.session = stem[-1] if stem[-1] in ("M", "A") else None
         self.day = int(stem[-2][1]) if stem[-2][0] == "D" else None
@@ -97,14 +107,19 @@ class CSVFile(Dataset):
             self.day, int
         ), f"Unexpected file name: {file.name}"
 
+        # Get the label using the label function.
         self.label = torch.tensor(label_fn(self), dtype=torch.float32)
 
     def __len__(self) -> int:
+        """Get the number of possible windows in this dataset."""
         return max(len(self.data) - self.window_size + 1, 0)
 
     def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
+        """Get a window from this dataset and the dataset's label."""
         item = self.data[idx : idx + self.window_size]
         return item.T, self.label
+
+    # The following methods are useful label functions:
 
     def is_shift_day(self) -> bool:
         return self.shift == "D"

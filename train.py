@@ -7,7 +7,7 @@ from random import shuffle
 from typing import Iterable, Optional, Union
 
 import torch
-from torch import nn, Tensor
+from torch import cuda, device, nn, Tensor
 from torch.nn.modules.loss import _Loss
 from torch.optim import Optimizer, Adam
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
@@ -44,10 +44,10 @@ def evaluate(
     model: nn.Module,
     data: Iterable[tuple[Tensor, Tensor]],
     loss_fn: _Loss,
-    device: Union[torch.device, str],
+    device: Union[device, str],
 ) -> tuple[float, list[int], list[int]]:
     """
-    Evaluates a model.
+    Evaluates a model on the data provided.
 
     Parameters
     ==========
@@ -90,7 +90,7 @@ def train(
     loss_fn: _Loss,
     optimizer: Optimizer,
     scheduler: Union[_LRScheduler, ReduceLROnPlateau],
-    device: Union[torch.device, str],
+    device: Union[device, str],
 ) -> float:
     """
     Performs one epoch of training by passing once through the data provided,
@@ -145,10 +145,18 @@ def main(
     device: Optional[str] = None,
     output_dir: Optional[Path] = None,
 ) -> None:
+
+    # Record the date and time that training started.
     date_and_time = datetime.now()
+
+    # This has something to do with the way threads share data. Without
+    # increasing the resource limit, the program sometimes hangs without
+    # error - depending on the amount of data.
     set_resource_limit(4096)
 
-    # get model class
+    # Determine the model class from the model name string argument. This is
+    # the either the class initialiser or a function that returns an
+    # initialised class.
     model_class = {
         "dixonnet": DixonNet,
         "resnet18": resnet18,
@@ -156,7 +164,9 @@ def main(
         "resnet50": resnet50,
     }[model_name]
 
-    # get label function
+    # Determine the label function from the label name string argument. This
+    # is a function that takes a CSVFile and returns a boolean to indicate
+    # which binary class this data belongs to.
     label_function = {
         "shift": CSVFile.is_shift_day,
         "sleep": CSVFile.is_sleep_long,
@@ -164,14 +174,15 @@ def main(
         "session": CSVFile.is_session_morning,
     }[label_name]
 
-    # detect devices
-    if not device:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    n_devices = torch.cuda.device_count() if device == "cuda" else 1
+    # Detect whether a CUDA GPU is available. If so, detect how many.
+    device = device or ("cuda" if cuda.is_available() else "cpu")
+    n_devices = cuda.device_count() if device == "cuda" else 1
     print(f"Found {n_devices} {device} devices.")
 
-    # load data
+    # Load the data. Files are found in the data directory based on file
+    # extension. They are sorted for repeatability - e.g. If loaded again
+    # for futher model evaluation, they need to be split into the same
+    # training and evaluation subsets.
     print("\nLoading data...")
     files = load_csv_files(
         sorted(find_files(["data"], "csv")),
@@ -183,7 +194,11 @@ def main(
     )
     print(f"Found {len(files)} data files.")
 
-    # split data
+    # Split the data into training and testing subsets. This is done on a
+    # file-by-file basis, either by fraction or by k-fold validation method.
+    # If done by fraction, the data is shuffled first. This is not repeatable
+    # unless a random seed is specified, which it is not. The k-fold method
+    # must be used if repeatability is required.
     k_fold = max(k_fold, 1)
     assert max(k_fold, 2) < len(files), f"Expected at least {max(k_fold, 2)} files."
 
@@ -193,13 +208,15 @@ def main(
     else:
         split_files = k_fold_splits(files, k=k_fold)
 
-    # batch data
+    # Batch the data. The data is no longer sepererated by file. The datasets
+    # in each training and testing subset are combined into one dataset, then
+    # their elements are shuffled and batched.
     data = [
         [batch_data(ds, batch_size, shuffle=True) for ds in split]
         for split in split_files
     ]
 
-    # create output directory
+    # Create an output directory to contain logs and model parameters.
     if output_dir is None:
         output_dir = Path("output")
         output_dir /= str(date_and_time).replace(" ", "_").replace(":", ".")
@@ -208,28 +225,33 @@ def main(
     log_file = output_dir / "log.ndjson"
     params_dir.mkdir(parents=True, exist_ok=True)
 
+    # We iterate over each split of the data. If the data was split by
+    # fraction, there will only be one training / testing pair of
+    # datasets. Otherwise there will be one for each k-fold.
     for k, (train_data, test_data) in enumerate(data):
         print(f"\nfold {k + 1} of {len(data)}".upper())
         print(f"Training data size: {len(train_data.dataset)}")
         print(f"Testing data size: {len(test_data.dataset)}")
 
-        # build model
+        # Build the model and put it on the chosen device.
         print("\nBuilding model...")
         model = model_class(num_classes=1).to(device)
         n_params = sum(p.numel() for p in model.parameters())
 
+        # If there are multiple GPUs, the model needs wrapping in the
+        # DataParallel class.
         if n_devices > 1:
-            model = torch.nn.DataParallel(model)
+            model = nn.DataParallel(model)
 
         print(model_name.upper())
         print(f"Parameters: {n_params}")
 
-        # loss function, optimizer, scheduler
+        # Create the loss function, optimiser and learning rate scheduler.
         loss_fn = nn.BCEWithLogitsLoss()
         optimizer = Adam(model.parameters(), lr=learn_rate)
         scheduler = ReduceLROnPlateau(optimizer)
 
-        # save model config
+        # Save the model configuration.
         with open(output_dir / f"{model_name}.txt", "w") as f:
             f.write(f"{date_and_time = }\n")
             f.write(f"{model_name = }\n")
@@ -238,28 +260,32 @@ def main(
             f.write(f"{device = }\n")
             f.write(f"{n_devices = }\n")
 
-        # start training
+        # Begin training. We train until either max epochs have occurred or
+        # the learning rate has reached a very small value.
         print("\nTraining...")
         min_lr = 1e-7
 
         for epoch in range(1, max_epochs + 1):
 
-            # check the learning rate and terminate if less than min_lr
+            # Check the learning rate and terminate if it is less than min_lr.
             lrs = [group["lr"] for group in optimizer.param_groups]
             if all(lr < min_lr for lr in lrs):
                 print("Training ended.")
                 break
 
-            # train
+            # Call the train function. An true epoch is a pass over the entire
+            # training data but that would take a long time. Instead we grab a
+            # few batches and train on that. The data is shuffled so these are
+            # not the same batches every time.
             some_train_data = list(islice(train_data, 100))
             loss = train(model, some_train_data, loss_fn, optimizer, scheduler, device)
 
+            # Print some info and log a lot of info.
             print_as_line(
                 epoch=str(epoch),
                 lr=", ".join(f"{lr:.4e}" for lr in lrs),
                 loss=f"{loss:.4e}",
             )
-
             log_to_file(
                 log_file,
                 data="training",
@@ -273,7 +299,7 @@ def main(
                 learning_rate=lrs[0],
             )
 
-            # save model parameters and evaluate
+            # Every so often, save the model parameters and evaluate the model.
             if epoch % 10 == 0:
                 torch.save(
                     model.state_dict(), params_dir / f"{model_name}-{k}-{epoch}.params",
@@ -281,20 +307,23 @@ def main(
 
                 print()
 
+                # Again, evaluating on all available data would take a long
+                # time, so we grab a few batches an evaluate on that.
                 some_test_data = list(islice(train_data, 1000))
                 loss, truth, prediction = evaluate(
                     model, some_test_data, loss_fn, device
                 )
 
+                # Calculate some performance metrics.
                 confusion = confusion_matrix(truth, prediction)
                 tn, fp, fn, tp = map(int, confusion.ravel())
                 accuracy = accuracy_score(truth, prediction)
                 f_score = f1_score(truth, prediction)
 
+                # Print some info and log a lot of info.
                 print_as_line(
                     loss=f"{loss:.4e}", acc=f"{accuracy:.2%}", f=f"{f_score:.2f}",
                 )
-
                 log_to_file(
                     log_file,
                     data="evaluation",
