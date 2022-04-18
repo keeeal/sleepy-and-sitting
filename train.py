@@ -95,7 +95,7 @@ def train(
     """
     Performs one epoch of training by passing once through the data provided,
     updating the parameters of the model in a direction that minimises loss
-    and in accordance with the optimiser and learning rate scheduler.
+    and in accordance with the optimiser and learning rate schedule.
 
     Parameters
     ==========
@@ -277,7 +277,7 @@ def main(
             # training data but that would take a long time. Instead we grab a
             # few batches and train on that. The data is shuffled so these are
             # not the same batches every time.
-            some_train_data = list(islice(train_data, 100))
+            some_train_data = islice(train_data, 100)
             loss = train(model, some_train_data, loss_fn, optimizer, scheduler, device)
 
             # Print some info and log a lot of info.
@@ -308,8 +308,9 @@ def main(
                 print()
 
                 # Again, evaluating on all available data would take a long
-                # time, so we grab a few batches an evaluate on that.
-                some_test_data = list(islice(train_data, 1000))
+                # time, so we grab a few batches an evaluate on that. The data
+                # is shuffled so these are not the same batches every time.
+                some_test_data = islice(test_data, 1000)
                 loss, truth, prediction = evaluate(
                     model, some_test_data, loss_fn, device
                 )
