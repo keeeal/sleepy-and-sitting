@@ -47,8 +47,10 @@ class CSVFile(Dataset):
         window_size: int = 1,
         median_filter_size: int = 0,
         low_pass_frequency: float = 0,
+        stride: int = 1,
     ):
-        self.window_size = window_size
+        self.window_size = max(window_size, 1)
+        self.stride = max(stride, 1)
 
         # If no columns specified, determine how many are in the file by
         # reading the first line.
@@ -112,11 +114,12 @@ class CSVFile(Dataset):
 
     def __len__(self) -> int:
         """Get the number of possible windows in this dataset."""
-        return max(len(self.data) - self.window_size + 1, 0)
+        return max(int((len(self.data) - self.window_size) / self.stride + 1), 0)
 
-    def __getitem__(self, idx: int) -> tuple[Tensor, Tensor]:
+    def __getitem__(self, index: int) -> tuple[Tensor, Tensor]:
         """Get a window from this dataset and the dataset's label."""
-        item = self.data[idx : idx + self.window_size]
+        start = index * self.stride
+        item = self.data[start : start + self.window_size]
         return item.T, self.label
 
     # The following methods are useful label functions:
@@ -183,37 +186,18 @@ def k_fold_splits(s: Sequence[T], k: int = 5) -> list[tuple[list[T], list[T]]]:
     return [(list(chain(*p[:n], *p[n + 1 :])), list(p[n])) for n in range(k)]
 
 
-def load_csv_files(
-    files: Iterable[Path],
-    *,
-    label_fn: Callable[[CSVFile], bool],
-    columns: Iterable[int],
-    window_size: int,
-    median_filter_size: int = 0,
-    low_pass_frequency: float = 0,
-) -> list[CSVFile]:
+def load_csv_files(files: Iterable[Path], **kwargs) -> list[CSVFile]:
     """
     Creates CSVFile datasets by processing multiple CSV files in parallel.
 
     Parameters
     ==========
     files: The paths of each CSV file.
-    columns: The indices of the columns to read.
-    window_size: The number of lines per sample.
+    **kwargs: Keyword arguments are passed to the CSVFile constructor.
     """
 
     with Pool() as p:
-        return p.map(
-            partial(
-                CSVFile,
-                label_fn=label_fn,
-                columns=columns,
-                window_size=window_size,
-                median_filter_size=median_filter_size,
-                low_pass_frequency=low_pass_frequency,
-            ),
-            files,
-        )
+        return p.map(partial(CSVFile, **kwargs), files)
 
 
 def batch_data(

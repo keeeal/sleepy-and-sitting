@@ -293,6 +293,8 @@ def main(
                 model=model_name,
                 window_size=window_size,
                 batch_size=batch_size,
+                median_filter_size=med_filt_size,
+                low_pass_frequency=low_pass_freq,
                 fold=k,
                 epoch=epoch,
                 loss=loss,
