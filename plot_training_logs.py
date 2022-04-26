@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 import json
 from itertools import chain
 from math import log10
@@ -101,8 +102,6 @@ def main(log_files: list[Path]) -> None:
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
     parser.add_argument("log_files", nargs="+", type=Path)
     main(**vars(parser.parse_args()))

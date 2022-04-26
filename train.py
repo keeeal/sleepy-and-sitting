@@ -142,6 +142,7 @@ def main(
     max_epochs: int,
     med_filt_size: int,
     low_pass_freq: float,
+    skip_morning_day_1: bool,
     device: Optional[str] = None,
     output_dir: Optional[Path] = None,
 ) -> None:
@@ -191,6 +192,7 @@ def main(
         window_size=window_size,
         median_filter_size=med_filt_size,
         low_pass_frequency=low_pass_freq,
+        skip_morning_day_1=skip_morning_day_1,
     )
     print(f"Found {len(files)} data files.")
 
@@ -269,11 +271,12 @@ def main(
 
             # Check the learning rate and terminate if it is less than min_lr.
             lrs = [group["lr"] for group in optimizer.param_groups]
+
             if all(lr < min_lr for lr in lrs):
                 print("Training ended.")
                 break
 
-            # Call the train function. An true epoch is a pass over the entire
+            # Call the train function. A true epoch is a pass over the entire
             # training data but that would take a long time. Instead we grab a
             # few batches and train on that. The data is shuffled so these are
             # not the same batches every time.
@@ -377,6 +380,7 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--max-epochs", type=int, default=1000)
     parser.add_argument("-mf", "--med-filt-size", type=int, default=0)
     parser.add_argument("-lp", "--low-pass-freq", type=float, default=0)
+    parser.add_argument("--skip-morning-day-1", action="store_true")
     parser.add_argument("-d", "--device", default=None)
     parser.add_argument("-o", "--output-dir", type=Path, default=None)
     main(**vars(parser.parse_args()))

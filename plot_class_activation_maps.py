@@ -1,31 +1,32 @@
-from datetime import datetime
+from argparse import ArgumentParser
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Optional
 from matplotlib.collections import LineCollection
 
 import torch
-from torch import cuda, negative, nn
+from torch import cuda, nn
 import numpy as np
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from models.dixonnet import DixonNet
 from models.resnet import resnet18, resnet34, resnet50
-from utils.data import CSVFile, batch_data, find_files, k_fold_splits, load_csv_files
+from utils.data import SAMPLE_RATE, CSVFile, batch_data, find_files, k_fold_splits, load_csv_files
 from utils.misc import set_resource_limit
 
 
-def plot_coloured_line(
+def plot_class_activation_map(
     file: Path, x: np.ndarray, y: np.ndarray, z: np.ndarray, c: np.ndarray
 ):
-    # https://matplotlib.org/stable/gallery/lines_bars_and_markers/multicolored_line.html
+    # This function is based on the coloured line code example found at
+    # matplotlib.org/stable/gallery/lines_bars_and_markers/multicolored_line.html
 
     assert len(x) == len(y) == len(z) == len(c)
-    r = np.arange(len(x))
+    r = np.arange(len(x)) / SAMPLE_RATE
 
-    x -= x.mean()
-    y -= y.mean()
-    z -= z.mean()
+    x_mean = x.mean()
+    y_mean = y.mean()
+    z_mean = z.mean()
 
     c = c[:-1]
     c /= np.abs(c).max()
@@ -39,30 +40,40 @@ def plot_coloured_line(
     z_points = np.array([r, z]).T.reshape(-1, 1, 2)
     z_segments = np.concatenate([z_points[:-1], z_points[1:]], axis=1)
 
-    fig, axs = plt.subplots(3, 1, sharex=True, sharey=True)
+    fig, axs = plt.subplots(3, 1, sharex=True, sharey=False)
     norm = plt.Normalize(-1, 1)
 
     x_lc = LineCollection(x_segments, cmap="coolwarm", norm=norm)
     x_lc.set_array(c)
     x_lc.set_linewidth(2)
     x_line = axs[0].add_collection(x_lc)
-    fig.colorbar(x_line, ax=axs[0])
+    axs[0].set_ylim(x_mean - 1, x_mean + 1)
+    x_cb = fig.colorbar(x_line, ax=axs[0], ticks=[-1, 1])
+    x_cb.ax.set_yticklabels(['5 hours', '9 hours'])
 
     y_lc = LineCollection(y_segments, cmap="coolwarm", norm=norm)
     y_lc.set_array(c)
     y_lc.set_linewidth(2)
     y_line = axs[1].add_collection(y_lc)
-    fig.colorbar(y_line, ax=axs[1])
+    axs[1].set_ylim(y_mean - 1, y_mean + 1)
+    y_cb = fig.colorbar(y_line, ax=axs[1], ticks=[-1, 1])
+    y_cb.ax.set_yticklabels(['5 hours', '9 hours'])
 
     z_lc = LineCollection(z_segments, cmap="coolwarm", norm=norm)
     z_lc.set_array(c)
     z_lc.set_linewidth(2)
     z_line = axs[2].add_collection(z_lc)
-    fig.colorbar(z_line, ax=axs[2])
+    axs[2].set_ylim(z_mean - 1, z_mean + 1)
+    z_cb = fig.colorbar(z_line, ax=axs[2], ticks=[-1, 1])
+    z_cb.ax.set_yticklabels(['5 hours', '9 hours'])
 
     axs[0].set_xlim(r.min(), r.max())
-    axs[0].set_ylim(-1, 1)
+    axs[-1].set_xlabel("Time (s)")
 
+    for ax in axs:
+        ax.set_ylabel("Acc. (g)")
+
+    plt.tight_layout()
     plt.savefig(file)
     plt.close()
 
@@ -209,12 +220,10 @@ def main(
 
             for (x, y, z), h in zip(window, m):
                 for c in h:
-                    plot_coloured_line(Path(f"{k=},{n=}.png"), x, y, z, c)
+                    plot_class_activation_map(Path(f"{k=},{n=}.png"), x, y, z, c)
 
 
 if __name__ == "__main__":
-    import argparse
-
     models = [
         "dixonnet",
         "resnet18",
@@ -229,7 +238,7 @@ if __name__ == "__main__":
         "session",
     ]
 
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
     parser.add_argument("-m", "--model-name", choices=models, default="resnet18")
     parser.add_argument("-p", "--parameters", type=Path)
     parser.add_argument("-b", "--batch-size", type=int, default=64)

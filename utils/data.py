@@ -22,7 +22,8 @@ class CSVFile(Dataset):
     Creates a PyTorch dataset from a CSV file. Columns specified by index are
     read and their values converted to floats. The dataset will consist of
     every possible consecutive slice of data having the requested window size.
-    Other attributes of the data are assertained from the CSV filename.
+    Other attributes of the data are assertained from the CSV filename and the
+    name of its parent directory.
 
     Parameters
     ==========
@@ -36,6 +37,8 @@ class CSVFile(Dataset):
         column of data. Must be odd. If 0, not applied. Default = 0.
     low_pass_frequency: The frequency (in Hertz) above which frequencies are
         removed via Butterworth filter. If 0, not applied. Default = 0.
+    skip_morning_day_1: If true and the file contains data recorded on the
+        morning of day 1, this dataset will be made empty. Default = False.
     """
 
     def __init__(
@@ -45,14 +48,15 @@ class CSVFile(Dataset):
         label_fn: Callable[[Any], bool],
         columns: Optional[Iterable[int]] = None,
         window_size: int = 1,
+        stride: int = 1,
         median_filter_size: int = 0,
         low_pass_frequency: float = 0,
-        stride: int = 1,
+        skip_morning_day_1: bool = False,
     ):
         self.window_size = max(window_size, 1)
         self.stride = max(stride, 1)
 
-        # If no columns specified, determine how many are in the file by
+        # If no columns are specified, determine how many are in the file by
         # reading the first line.
         if columns is None:
             with open(file) as f:
@@ -111,6 +115,10 @@ class CSVFile(Dataset):
 
         # Get the label using the label function.
         self.label = torch.tensor(label_fn(self), dtype=torch.float32)
+
+        # Check if this data is the morning of day 1.
+        if skip_morning_day_1 and self.session == "A" and self.day == 1:
+            self.data = []
 
     def __len__(self) -> int:
         """Get the number of possible windows in this dataset."""
