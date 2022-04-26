@@ -11,8 +11,8 @@ from tqdm import tqdm
 
 from models.dixonnet import DixonNet
 from models.resnet import resnet18, resnet34, resnet50
-from utils.data import SAMPLE_RATE, CSVFile, batch_data, find_files, k_fold_splits, load_csv_files
-from utils.misc import set_resource_limit
+from utils.data import SAMPLE_RATE, batch_data, find_files, k_fold_splits, load_csv_files
+from utils.misc import set_resource_limit, true
 
 
 def plot_class_activation_map(
@@ -71,7 +71,7 @@ def plot_class_activation_map(
     axs[-1].set_xlabel("Time (s)")
 
     for ax in axs:
-        ax.set_ylabel("Acc. (g)")
+        ax.set_ylabel("Acceleration (g)")
 
     plt.tight_layout()
     plt.savefig(file)
@@ -105,16 +105,6 @@ def main(
         "resnet50": resnet50,
     }[model_name]
 
-    # Determine the label function from the label name string argument. This
-    # is a function that takes a CSVFile and returns a boolean to indicate
-    # which binary class this data belongs to.
-    label_function = {
-        "shift": CSVFile.is_shift_day,
-        "sleep": CSVFile.is_sleep_long,
-        "activity": CSVFile.is_activity_broken,
-        "session": CSVFile.is_session_morning,
-    }[label_name]
-
     # Detect whether a CUDA GPU is available. If so, detect how many.
     device = device or ("cuda" if cuda.is_available() else "cpu")
     n_devices = cuda.device_count() if device == "cuda" else 1
@@ -127,7 +117,7 @@ def main(
     print("\nLoading data...")
     files = load_csv_files(
         sorted(find_files(["data"], "csv")),
-        label_fn=label_function,
+        label_fn=true,
         columns=(2, 3, 4),
         window_size=window_size,
         median_filter_size=med_filt_size,

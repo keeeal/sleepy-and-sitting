@@ -10,11 +10,7 @@ from matplotlib import pyplot as plt
 import torch
 
 from utils.data import CSVFile, find_files, load_csv_files, SAMPLE_RATE
-
-
-def _true(*_, **__) -> bool:
-    """Always returns true."""
-    return True
+from utils.misc import true
 
 
 def describe(s: Sequence[CSVFile]) -> str:
@@ -65,7 +61,7 @@ def main(med_filt_size: int, low_pass_freq: float, plot_fft: bool):
     print("\nLoading data...")
     files = load_csv_files(
         find_files(["data"], "csv"),
-        label_fn=_true,
+        label_fn=true,
         columns=(2, 3, 4),
         window_size=1,
         median_filter_kernel_size=med_filt_size,

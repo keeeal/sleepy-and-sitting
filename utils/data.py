@@ -93,6 +93,12 @@ class CSVFile(Dataset):
         self.data = torch.tensor(data, dtype=torch.float32)
         self.data = (self.data - 512) / 128  # convert to g
 
+        # Normalise such that gravity points in the positive Z direction by
+        # rotating by 180 degrees about the Y axis if necessary.
+        if self.data[:, 2].mean().item() < 0:
+            self.data[:, 0] *= -1
+            self.data[:, 2] *= -1
+
         # Some properties of the data are determined from the name
         # of the parent directory.
         parent = file.parent.name.upper()
