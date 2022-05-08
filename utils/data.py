@@ -22,7 +22,7 @@ class CSVFile(Dataset):
     Creates a PyTorch dataset from a CSV file. Columns specified by index are
     read and their values converted to floats. The dataset will consist of
     every possible consecutive slice of data having the requested window size.
-    Other attributes of the data are assertained from the CSV filename and the
+    Other attributes of the data are ascertained from the CSV filename and the
     name of its parent directory.
 
     Parameters

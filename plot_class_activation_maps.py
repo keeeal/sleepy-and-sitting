@@ -73,7 +73,6 @@ def plot_class_activation_map(
     for ax in axs:
         ax.set_ylabel("Acceleration (g)")
 
-    plt.tight_layout()
     plt.savefig(file)
     plt.close()
 
@@ -86,7 +85,6 @@ def main(
     k_fold: int,
     med_filt_size: int,
     low_pass_freq: float,
-    label_name: str,
     device: Optional[str] = None,
 ) -> None:
 
@@ -201,9 +199,9 @@ def main(
             f_k = f_k.unsqueeze(1)
             m = torch.sum(w * f_k, dim=2)
 
-            # dixonnet only
-            m = nn.AdaptiveAvgPool1d(4 * m.shape[-1])(m)
-            window = window[:, :, 76:-76]
+            m = nn.AdaptiveAvgPool1d(model.scale_factor * m.shape[-1])(m)
+            offset = int((window.shape[-1] - m.shape[-1]) / 2)
+            window = window[:, :, offset:offset + m.shape[-1]]
 
             window = window.detach().numpy()
             m = m.detach().numpy()
@@ -236,6 +234,5 @@ if __name__ == "__main__":
     parser.add_argument("-k", "--k-fold", type=int, default=5)
     parser.add_argument("-mf", "--med-filt-size", type=int, default=0)
     parser.add_argument("-lp", "--low-pass-freq", type=float, default=0)
-    parser.add_argument("-l", "--label-name", choices=labels, default="sleep")
     parser.add_argument("-d", "--device", default=None)
     main(**vars(parser.parse_args()))

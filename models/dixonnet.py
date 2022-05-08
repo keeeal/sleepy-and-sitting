@@ -12,6 +12,7 @@ class DixonNet(nn.Module):
         dropout: float = 0.5,
     ):
         super().__init__()
+        self.scale_factor = 4
         self.features = nn.Sequential(
             nn.Conv1d(in_channels, width, kernel_size),
             nn.ReLU(),

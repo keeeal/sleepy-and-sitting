@@ -1,3 +1,4 @@
+*.sh
 *.png
 
 # Ignore all directories unless explicitly listed
