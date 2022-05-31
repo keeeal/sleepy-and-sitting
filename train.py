@@ -248,7 +248,7 @@ def main(
         print(model_name.upper())
         print(f"Parameters: {n_params}")
 
-        # Create the loss function, optimiser and learning rate scheduler.
+        # Create the loss function, optimizer and learning rate scheduler.
         loss_fn = nn.BCEWithLogitsLoss()
         optimizer = Adam(model.parameters(), lr=learn_rate)
         scheduler = ReduceLROnPlateau(optimizer)
@@ -283,12 +283,14 @@ def main(
             some_train_data = islice(train_data, 100)
             loss = train(model, some_train_data, loss_fn, optimizer, scheduler, device)
 
-            # Print some info and log a lot of info.
+            # Print some info.
             print_as_line(
                 epoch=str(epoch),
                 lr=", ".join(f"{lr:.4e}" for lr in lrs),
                 loss=f"{loss:.4e}",
             )
+
+            # Log a lot of info.
             log_to_file(
                 log_file,
                 data="training",
@@ -326,10 +328,12 @@ def main(
                 accuracy = accuracy_score(truth, prediction)
                 f_score = f1_score(truth, prediction)
 
-                # Print some info and log a lot of info.
+                # Print some info.
                 print_as_line(
                     loss=f"{loss:.4e}", acc=f"{accuracy:.2%}", f=f"{f_score:.2f}",
                 )
+
+                # Log a lot of info.
                 log_to_file(
                     log_file,
                     data="evaluation",
