@@ -97,7 +97,7 @@ python plot_class_activation_maps.py --model-name {dixonnet, resnet18} /path/to/
 
 ## Licence
 
-All source code is made available under a BSD 3-clause license. You may freely use and modify this code, without warranty, so long as you provide attribution to the authors. The manuscript text is not open source. The article's content has been published in the journal Australian Archeology.
+All source code is made available under a BSD 3-clause license. You may freely use and modify this code, without warranty, so long as you provide attribution to the authors. The manuscript text is not open source. The article's content has been published in the journal [Sensors](https://www.mdpi.com/journal/sensors).
 
 ## Citation
 
