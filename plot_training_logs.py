@@ -91,7 +91,7 @@ def get_best(
     data: DataFrame,
     filters: dict[str, str],
     variable: str,
-    best: Callable[[Series], float] = max,
+    best: Callable[[list[tuple[float]]], float] = max,
 ) -> float:
     """
     Get the best of a variable.
