@@ -6,10 +6,9 @@
  - ² The University of Adelaide, School of Physical Sciences, Adelaide 5005, South Australia, Australia.
  - ³ Flinders University, College of Humanities and Social Sciences, Adelaide 5001, South Australia, Australia.
 
-<!-- TODO: Include URL in paragraph 1 -->
-<!-- TODO: Include DOI in citation -->
+This repository contains the official implementation of the article [A deep learning approach to classify sitting and sleep history from raw accelerometry data during simulated driving](https://www.mdpi.com/1424-8220/22/17/6598). The accelerometer recordings used in the publication are considered medical data and cannot be openly distributed. For this reason, the data has not been included in this repository.
 
-This repository contains the official implementation of the article [A deep learning approach to classify sitting and sleep history from raw accelerometry data during simulated driving](). The accelerometer recordings used in the publication are considered medical data and cannot be openly distributed. For this reason, the data has not been included in this repository.
+
 
 ## Requirements
 
@@ -101,4 +100,4 @@ All source code is made available under a BSD 3-clause license. You may freely u
 
 ## Citation
 
- > Georgia A. Tuckwell¹, James A. Keal², Charlotte C. Gupta¹, Sally A. Ferguson¹, Jarrad D. Kowlessar³, & Grace E. Vincent¹. "A deep learning approach to classify sitting and sleep history from raw accelerometry data during simulated driving", Sensors, 2022, 22, DOI:
+ > Georgia A. Tuckwell¹, James A. Keal², Charlotte C. Gupta¹, Sally A. Ferguson¹, Jarrad D. Kowlessar³, & Grace E. Vincent¹. "A deep learning approach to classify sitting and sleep history from raw accelerometry data during simulated driving", Sensors, 2022, 22, DOI: 10.3390/s22176598
