@@ -8,7 +8,7 @@
 
 This repository contains the official implementation of the article [A deep learning approach to classify sitting and sleep history from raw accelerometry data during simulated driving](https://www.mdpi.com/1424-8220/22/17/6598). The accelerometer recordings used in the publication are considered medical data and cannot be openly distributed. For this reason, the data has not been included in this repository.
 
-
+![figure_4](plots/combined_plots.png)
 
 ## Requirements
 
