@@ -6,6 +6,7 @@
 !data/
 !models/
 !utils/
+!plots/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
